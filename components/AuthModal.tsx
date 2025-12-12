@@ -46,68 +46,80 @@ export default function AuthModal({ isOpen, onClose, onSignIn, onSignUp }: AuthM
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="relative max-w-md w-full bg-white/5 border border-white/10 rounded-2xl p-8 shadow-2xl shadow-black/40">
-        <div className="absolute -inset-px rounded-2xl bg-gradient-to-br from-white/10 via-transparent to-emerald-500/20 pointer-events-none" />
-
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="relative max-w-[400px] w-full bg-[#202123] rounded-2xl p-10 shadow-2xl border border-white/10">
         <button
           onClick={onClose}
           className="absolute top-4 right-4 text-gray-400 hover:text-white transition"
         >
-          <X size={22} />
+          <X size={20} />
         </button>
 
-        <div className="mb-6">
-          <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Welcome to</p>
-          <h2 className="text-3xl font-bold text-white">Ikamba AI</h2>
-          <p className="text-sm text-gray-400 mt-1">
-            Sign {isSignUp ? 'up' : 'in'} to continue your conversations.
+        <div className="mb-8 text-center">
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-white/5 border border-white/10 mb-6">
+            <svg
+              className="w-6 h-6 text-white"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+              />
+            </svg>
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-2">Welcome back</h2>
+          <p className="text-sm text-gray-400">
+            {isSignUp ? 'Create an account to get started' : 'Sign in to continue to Ikamba AI'}
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 relative z-10">
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-gray-300">Email</label>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-gray-400 uppercase tracking-wider">Email address</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="w-full bg-white/5 text-white rounded-xl px-4 py-3 border border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/60 placeholder:text-gray-500"
-              placeholder="your@email.com"
+              className="w-full bg-[#2A2B32] text-white rounded-lg px-4 py-3 border border-transparent focus:border-emerald-500/50 focus:ring-0 focus:bg-[#2A2B32] placeholder:text-gray-600 transition-all"
+              placeholder="name@example.com"
             />
           </div>
 
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-gray-300">Password</label>
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-gray-400 uppercase tracking-wider">Password</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={6}
-              className="w-full bg-white/5 text-white rounded-xl px-4 py-3 border border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/60 placeholder:text-gray-500"
+              className="w-full bg-[#2A2B32] text-white rounded-lg px-4 py-3 border border-transparent focus:border-emerald-500/50 focus:ring-0 focus:bg-[#2A2B32] placeholder:text-gray-600 transition-all"
               placeholder="••••••••"
             />
           </div>
 
           {isSignUp && (
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-gray-300">Confirm Password</label>
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-gray-400 uppercase tracking-wider">Confirm Password</label>
               <input
                 type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 required
                 minLength={6}
-                className="w-full bg-white/5 text-white rounded-xl px-4 py-3 border border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/60 placeholder:text-gray-500"
+                className="w-full bg-[#2A2B32] text-white rounded-lg px-4 py-3 border border-transparent focus:border-emerald-500/50 focus:ring-0 focus:bg-[#2A2B32] placeholder:text-gray-600 transition-all"
                 placeholder="••••••••"
               />
             </div>
           )}
 
           {error && (
-            <div className="text-red-300 text-sm bg-red-500/10 border border-red-500/20 p-3 rounded-xl">
+            <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/20 p-3 rounded-lg text-center">
               {error}
             </div>
           )}
@@ -115,19 +127,22 @@ export default function AuthModal({ isOpen, onClose, onSignIn, onSignUp }: AuthM
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-gradient-to-r from-[#10a37f] to-[#0d8968] hover:shadow-lg hover:-translate-y-0.5 text-white font-semibold py-3 rounded-xl transition shadow-md shadow-[#10a37f]/20 disabled:opacity-60"
+            className="w-full bg-[#10a37f] hover:bg-[#0d8a6a] text-white font-medium py-3 rounded-lg transition-colors disabled:opacity-60 mt-2"
           >
-            {loading ? 'Loading...' : isSignUp ? 'Create account' : 'Sign in'}
+            {loading ? 'Please wait...' : isSignUp ? 'Continue' : 'Continue'}
           </button>
         </form>
 
-        <div className="mt-5 text-center">
-          <button
-            onClick={() => setIsSignUp(!isSignUp)}
-            className="text-sm text-gray-300 hover:text-white transition"
-          >
-            {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
-          </button>
+        <div className="mt-6 text-center">
+          <p className="text-sm text-gray-400">
+            {isSignUp ? 'Already have an account?' : "Don't have an account?"}{' '}
+            <button
+              onClick={() => setIsSignUp(!isSignUp)}
+              className="text-[#10a37f] hover:text-[#0d8a6a] font-medium transition-colors"
+            >
+              {isSignUp ? 'Sign in' : 'Sign up'}
+            </button>
+          </p>
         </div>
       </div>
     </div>

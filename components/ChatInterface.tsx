@@ -40,11 +40,11 @@ export default function ChatInterface({ messages, onSendMessage, isLoading }: Ch
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         {messages.length === 0 ? (
-          <div className="flex items-center justify-center h-full px-6 text-gray-300">
-            <div className="text-center bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-10 shadow-xl max-w-xl w-full">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-[#10a37f] to-[#0d8a6a] shadow-2xl shadow-[#10a37f]/20 mb-4">
+          <div className="flex items-center justify-center h-full px-6">
+            <div className="text-center max-w-2xl w-full">
+              <div className="inline-flex items-center justify-center w-20 h-20 rounded-3xl bg-white/5 border border-white/10 shadow-2xl mb-8">
                 <svg
-                  className="w-10 h-10 text-white"
+                  className="w-10 h-10 text-emerald-500"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -52,17 +52,17 @@ export default function ChatInterface({ messages, onSendMessage, isLoading }: Ch
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    strokeWidth={2}
+                    strokeWidth={1.5}
                     d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
                   />
                 </svg>
               </div>
-              <h2 className="text-3xl font-bold mb-2 text-white">Ikamba AI</h2>
-              <p className="text-[#9ca3af]">Ask anything. Get fast, thoughtful answers.</p>
+              <h2 className="text-4xl font-bold mb-4 text-white tracking-tight">How can I help you today?</h2>
+              <p className="text-gray-400 text-lg">I&apos;m here to assist with code, writing, analysis, and more.</p>
             </div>
           </div>
         ) : (
-          <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-4">
+          <div className="w-full px-4 md:px-8 py-6 space-y-6">
             {messages.map((message, index) => {
               const isUser = message.role === 'user';
               return (
@@ -71,7 +71,7 @@ export default function ChatInterface({ messages, onSendMessage, isLoading }: Ch
                   className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
                 >
                   <div
-                    className={`max-w-3xl w-full sm:w-auto rounded-2xl border backdrop-blur-sm shadow-lg px-4 sm:px-5 py-4 text-sm sm:text-base whitespace-pre-wrap leading-relaxed transition-colors ${
+                    className={`max-w-[85%] sm:max-w-2xl md:max-w-3xl lg:max-w-4xl rounded-2xl border backdrop-blur-sm shadow-lg px-5 py-4 text-sm sm:text-base whitespace-pre-wrap leading-relaxed transition-colors ${
                       isUser
                         ? 'bg-emerald-500/10 border-emerald-400/20 text-emerald-50'
                         : 'bg-white/5 border-white/10 text-gray-100'
@@ -98,26 +98,28 @@ export default function ChatInterface({ messages, onSendMessage, isLoading }: Ch
       </div>
 
       {/* Input */}
-      <div className="border-t border-white/10 bg-black/30 backdrop-blur-sm p-4">
-        <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
-          <div className="relative flex items-center gap-3 bg-white/5 border border-white/10 rounded-2xl px-3 py-2 shadow-lg">
+      <div className="p-4 md:p-6 bg-gradient-to-t from-black/50 to-transparent">
+        <form onSubmit={handleSubmit} className="max-w-4xl mx-auto w-full">
+          <div className="relative flex items-center gap-3 bg-[#202123] border border-white/10 rounded-2xl px-4 py-3 shadow-2xl focus-within:ring-1 focus-within:ring-white/20 transition-all">
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              className="w-full bg-transparent text-white placeholder:text-gray-500 px-2 py-2 focus:outline-none"
+              className="w-full bg-transparent text-white placeholder:text-gray-500 px-2 py-1 focus:outline-none text-base"
               placeholder="Message Ikamba AI..."
               disabled={isLoading}
             />
             <button
               type="submit"
-              disabled={isLoading}
-              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#10a37f] to-[#0d8968] px-4 py-2 text-white font-semibold shadow-lg shadow-[#10a37f]/20 transition hover:shadow-xl hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-not-allowed"
+              disabled={isLoading || !input.trim()}
+              className="p-2 rounded-lg bg-white text-black disabled:bg-gray-600 disabled:text-gray-400 transition-colors hover:bg-gray-200"
             >
               <Send size={18} />
-              <span>{isLoading ? 'Thinking...' : 'Send'}</span>
             </button>
           </div>
+          <p className="text-center text-xs text-gray-500 mt-3">
+            Ikamba AI can make mistakes. Consider checking important information.
+          </p>
         </form>
       </div>
     </div>
