@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import ChatInterface from '@/components/ChatInterface';
 import Sidebar from '@/components/Sidebar';
@@ -39,16 +39,7 @@ export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!loading && !user) {
-      setShowAuthModal(true);
-    } else if (user) {
-      setShowAuthModal(false);
-      loadConversations();
-    }
-  }, [user, loading]);
-
-  const loadConversations = async () => {
+  const loadConversations = useCallback(async () => {
     if (!user) return;
 
     try {
@@ -75,7 +66,16 @@ export default function Home() {
     } catch (error) {
       console.error('Error loading conversations:', error);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (!loading && !user) {
+      setShowAuthModal(true);
+    } else if (user) {
+      setShowAuthModal(false);
+      loadConversations();
+    }
+  }, [user, loading, loadConversations]);
 
   const saveConversation = async (msgs: Message[]) => {
     if (!user || msgs.length === 0) return;
@@ -143,7 +143,7 @@ export default function Home() {
                 const parsed = JSON.parse(data);
                 assistantMessage += parsed.content;
                 setMessages([...newMessages, { role: 'assistant' as const, content: assistantMessage }]);
-              } catch (e) {
+              } catch {
                 // Ignore parsing errors
               }
             }

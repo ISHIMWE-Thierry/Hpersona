@@ -40,8 +40,8 @@ export default function ChatInterface({ messages, onSendMessage, isLoading }: Ch
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         {messages.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-gray-400">
-            <div className="text-center">
+          <div className="flex items-center justify-center h-full px-6 text-gray-300">
+            <div className="text-center bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-10 shadow-xl max-w-xl w-full">
               <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-[#10a37f] to-[#0d8a6a] shadow-2xl shadow-[#10a37f]/20 mb-4">
                 <svg
                   className="w-10 h-10 text-white"
@@ -57,52 +57,65 @@ export default function ChatInterface({ messages, onSendMessage, isLoading }: Ch
                   />
                 </svg>
               </div>
-              <h2 className="text-3xl font-bold mb-2 text-[#ececf1]">Ikamba AI</h2>
-              <p className="text-[#8e8ea0]">How can I help you today?</p>
+              <h2 className="text-3xl font-bold mb-2 text-white">Ikamba AI</h2>
+              <p className="text-[#9ca3af]">Ask anything. Get fast, thoughtful answers.</p>
             </div>
           </div>
         ) : (
-          <div className="max-w-3xl mx-auto">
-            {messages.map((message, index) => (
-              <div
-                key={index}
-                className={`py-8 px-4 ${
-                  message.role === 'user' ? 'bg-[#343541]' : 'bg-[#444654]'
-                }`}
-              >
-                <div className="max-w-3xl mx-auto flex gap-6">
-                  <div className="flex-shrink-0 w-8 h-8 rounded-sm bg-[#10a37f] flex items-center justify-center text-white font-semibold">
-                    {message.role === 'user' ? 'U' : 'AI'}
-                  </div>
-                  <div className="flex-1 text-[#ececf1] whitespace-pre-wrap">
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-4">
+            {messages.map((message, index) => {
+              const isUser = message.role === 'user';
+              return (
+                <div
+                  key={index}
+                  className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-3xl w-full sm:w-auto rounded-2xl border backdrop-blur-sm shadow-lg px-4 sm:px-5 py-4 text-sm sm:text-base whitespace-pre-wrap leading-relaxed transition-colors ${
+                      isUser
+                        ? 'bg-emerald-500/10 border-emerald-400/20 text-emerald-50'
+                        : 'bg-white/5 border-white/10 text-gray-100'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                      <span
+                        className={`inline-flex items-center justify-center w-7 h-7 rounded-md ${
+                          isUser ? 'bg-emerald-500/20 text-emerald-100' : 'bg-white/10 text-white'
+                        }`}
+                      >
+                        {isUser ? 'You' : 'AI'}
+                      </span>
+                      <span className="text-gray-400">{isUser ? 'Message' : 'Response'}</span>
+                    </div>
                     {message.content}
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             <div ref={messagesEndRef} />
           </div>
         )}
       </div>
 
       {/* Input */}
-      <div className="border-t border-[#4d4d4f] bg-[#343541] p-4">
-        <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
-          <div className="relative flex items-center">
+      <div className="border-t border-white/10 bg-black/30 backdrop-blur-sm p-4">
+        <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
+          <div className="relative flex items-center gap-3 bg-white/5 border border-white/10 rounded-2xl px-3 py-2 shadow-lg">
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Message ChatGPT..."
+              className="w-full bg-transparent text-white placeholder:text-gray-500 px-2 py-2 focus:outline-none"
+              placeholder="Message Ikamba AI..."
               disabled={isLoading}
-              className="w-full bg-[#40414f] text-[#ececf1] rounded-lg px-4 py-3 pr-12 focus:outline-none focus:ring-1 focus:ring-[#565869] disabled:opacity-50"
             />
             <button
               type="submit"
-              disabled={isLoading || !input.trim()}
-              className="absolute right-2 p-2 rounded-md text-[#ececf1] hover:bg-[#565869] disabled:opacity-50 disabled:hover:bg-transparent"
+              disabled={isLoading}
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#10a37f] to-[#0d8968] px-4 py-2 text-white font-semibold shadow-lg shadow-[#10a37f]/20 transition hover:shadow-xl hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <Send size={20} />
+              <Send size={18} />
+              <span>{isLoading ? 'Thinking...' : 'Send'}</span>
             </button>
           </div>
         </form>

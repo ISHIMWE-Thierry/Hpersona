@@ -37,76 +37,77 @@ export default function AuthModal({ isOpen, onClose, onSignIn, onSignUp }: AuthM
         await onSignIn(email, password);
       }
       onClose();
-    } catch (err: any) {
-      setError(err.message || 'Authentication failed');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Authentication failed';
+      setError(message);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-[#2a2b32] rounded-lg max-w-md w-full p-6 relative">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="relative max-w-md w-full bg-white/5 border border-white/10 rounded-2xl p-8 shadow-2xl shadow-black/40">
+        <div className="absolute -inset-px rounded-2xl bg-gradient-to-br from-white/10 via-transparent to-emerald-500/20 pointer-events-none" />
+
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 text-gray-400 hover:text-white"
+          className="absolute top-4 right-4 text-gray-400 hover:text-white transition"
         >
-          <X size={24} />
+          <X size={22} />
         </button>
 
-        <h2 className="text-2xl font-semibold text-white mb-6">
-          {isSignUp ? 'Create Account' : 'Welcome Back'}
-        </h2>
+        <div className="mb-6">
+          <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Welcome to</p>
+          <h2 className="text-3xl font-bold text-white">Ikamba AI</h2>
+          <p className="text-sm text-gray-400 mt-1">
+            Sign {isSignUp ? 'up' : 'in'} to continue your conversations.
+          </p>
+        </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Email
-            </label>
+        <form onSubmit={handleSubmit} className="space-y-4 relative z-10">
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-gray-300">Email</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="w-full bg-[#40414f] text-white rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-[#10a37f]"
+              className="w-full bg-white/5 text-white rounded-xl px-4 py-3 border border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/60 placeholder:text-gray-500"
               placeholder="your@email.com"
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Password
-            </label>
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-gray-300">Password</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={6}
-              className="w-full bg-[#40414f] text-white rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-[#10a37f]"
+              className="w-full bg-white/5 text-white rounded-xl px-4 py-3 border border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/60 placeholder:text-gray-500"
               placeholder="••••••••"
             />
           </div>
 
           {isSignUp && (
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                Confirm Password
-              </label>
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-gray-300">Confirm Password</label>
               <input
                 type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 required
                 minLength={6}
-                className="w-full bg-[#40414f] text-white rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-[#10a37f]"
+                className="w-full bg-white/5 text-white rounded-xl px-4 py-3 border border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/60 placeholder:text-gray-500"
                 placeholder="••••••••"
               />
             </div>
           )}
 
           {error && (
-            <div className="text-red-400 text-sm bg-red-900/20 p-3 rounded">
+            <div className="text-red-300 text-sm bg-red-500/10 border border-red-500/20 p-3 rounded-xl">
               {error}
             </div>
           )}
@@ -114,20 +115,18 @@ export default function AuthModal({ isOpen, onClose, onSignIn, onSignUp }: AuthM
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-[#10a37f] hover:bg-[#0d8968] text-white font-semibold py-2 rounded-lg transition disabled:opacity-50"
+            className="w-full bg-gradient-to-r from-[#10a37f] to-[#0d8968] hover:shadow-lg hover:-translate-y-0.5 text-white font-semibold py-3 rounded-xl transition shadow-md shadow-[#10a37f]/20 disabled:opacity-60"
           >
-            {loading ? 'Loading...' : isSignUp ? 'Sign Up' : 'Sign In'}
+            {loading ? 'Loading...' : isSignUp ? 'Create account' : 'Sign in'}
           </button>
         </form>
 
-        <div className="mt-4 text-center">
+        <div className="mt-5 text-center">
           <button
             onClick={() => setIsSignUp(!isSignUp)}
-            className="text-sm text-gray-400 hover:text-white"
+            className="text-sm text-gray-300 hover:text-white transition"
           >
-            {isSignUp
-              ? 'Already have an account? Sign in'
-              : "Don't have an account? Sign up"}
+            {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
           </button>
         </div>
       </div>

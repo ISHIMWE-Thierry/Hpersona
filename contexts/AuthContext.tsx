@@ -42,7 +42,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(timeout);
       setUser(user);
       setLoading(false);
-    }, (error) => {
+    }, () => {
       clearTimeout(timeout);
       setLoading(false);
     });
