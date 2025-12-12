@@ -141,7 +141,7 @@ export default function Home() {
               try {
                 const parsed = JSON.parse(data);
                 assistantMessage += parsed.content;
-                setMessages([...newMessages, { role: 'assistant', content: assistantMessage }]);
+                setMessages([...newMessages, { role: 'assistant' as const, content: assistantMessage }]);
               } catch (e) {
                 // Ignore parsing errors
               }
@@ -150,12 +150,12 @@ export default function Home() {
         }
       }
 
-      const finalMessages = [...newMessages, { role: 'assistant', content: assistantMessage }];
+      const finalMessages: Message[] = [...newMessages, { role: 'assistant' as const, content: assistantMessage }];
       setMessages(finalMessages);
       await saveConversation(finalMessages);
     } catch (error) {
       console.error('Error:', error);
-      setMessages([...newMessages, { role: 'assistant', content: 'Sorry, an error occurred.' }]);
+      setMessages([...newMessages, { role: 'assistant' as const, content: 'Sorry, an error occurred.' }]);
     } finally {
       setIsLoading(false);
     }
