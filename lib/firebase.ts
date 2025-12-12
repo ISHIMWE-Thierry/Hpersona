@@ -13,9 +13,16 @@ const firebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || "G-X7VEN6VELJ"
 };
 
+console.log('Initializing Firebase with config:', {
+  ...firebaseConfig,
+  apiKey: firebaseConfig.apiKey?.substring(0, 10) + '...'
+});
+
 // Initialize Firebase
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+console.log('Firebase initialized successfully');
 
 export { app, auth, db };
