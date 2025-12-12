@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import ChatInterface from '@/components/ChatInterface';
 import Sidebar from '@/components/Sidebar';
 import AuthModal from '@/components/AuthModal';
+import LoadingScreen from '@/components/LoadingScreen';
 import { db } from '@/lib/firebase';
 import {
   collection,
@@ -187,11 +188,7 @@ export default function Home() {
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-[#343541]">
-        <div className="text-white text-xl">Loading...</div>
-      </div>
-    );
+    return <LoadingScreen />;
   }
 
   return (

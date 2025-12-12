@@ -35,7 +35,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Set a timeout to prevent infinite loading
     const timeout = setTimeout(() => {
-      console.log('Auth initialization timeout - setting loading to false');
       setLoading(false);
     }, 3000);
 
@@ -43,10 +42,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(timeout);
       setUser(user);
       setLoading(false);
-      console.log('Auth state changed:', user ? 'User logged in' : 'No user');
     }, (error) => {
       clearTimeout(timeout);
-      console.error('Auth error:', error);
       setLoading(false);
     });
 
