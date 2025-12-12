@@ -3,5 +3,8 @@ firebase_config.json
 __pycache__/
 .env
 chroma_db/
-.streamlit/
 *.log
+
+# Keep .streamlit folder for deployment but ignore secrets
+.streamlit/secrets.toml
+.streamlit/credentials.toml

@@ -9,16 +9,22 @@ import time
 load_dotenv()
 
 # Check if Firebase is configured
-FIREBASE_ENABLED = os.path.exists('firebase_config.json')
-if FIREBASE_ENABLED:
-    try:
+FIREBASE_ENABLED = False
+try:
+    # Check for Streamlit Cloud secrets first
+    if hasattr(st, 'secrets') and 'firebase' in st.secrets:
+        from firebase_manager import FirebaseManager
+        # Will use st.secrets in firebase_manager
+        FirebaseManager.initialize()
+        FIREBASE_ENABLED = True
+    # Check for local config file
+    elif os.path.exists('firebase_config.json'):
         from firebase_manager import FirebaseManager
         FirebaseManager.initialize()
-    except Exception as e:
-        FIREBASE_ENABLED = False
-        st.warning("⚠️ Firebase not configured. Running in local mode. See SETUP.md for Firebase setup.")
-else:
-    st.info("ℹ️ Firebase not configured. App running in local mode without authentication.")
+        FIREBASE_ENABLED = True
+except Exception as e:
+    FIREBASE_ENABLED = False
+    print(f"Firebase initialization failed: {e}")
 
 # Page configuration
 st.set_page_config(

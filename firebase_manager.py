@@ -3,6 +3,7 @@ from firebase_admin import credentials, firestore, auth
 import streamlit as st
 import os
 from datetime import datetime
+import json
 
 class FirebaseManager:
     _initialized = False
@@ -16,7 +17,19 @@ class FirebaseManager:
                 firebase_admin.get_app()
             except ValueError:
                 # Initialize new app if doesn't exist
-                cred = credentials.Certificate('firebase_config.json')
+                cred = None
+                
+                # Try Streamlit secrets first (for Streamlit Cloud)
+                if hasattr(st, 'secrets') and 'firebase' in st.secrets:
+                    # Convert Streamlit secrets to dict
+                    firebase_config = dict(st.secrets['firebase'])
+                    cred = credentials.Certificate(firebase_config)
+                # Fall back to local file
+                elif os.path.exists('firebase_config.json'):
+                    cred = credentials.Certificate('firebase_config.json')
+                else:
+                    raise ValueError("No Firebase configuration found")
+                
                 firebase_admin.initialize_app(cred)
             cls._initialized = True
     
