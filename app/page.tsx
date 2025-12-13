@@ -2,10 +2,10 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import ChatInterface from '@/components/ChatInterface';
-import Sidebar from '@/components/Sidebar';
-import AuthModal from '@/components/AuthModal';
-import LoadingScreen from '@/components/LoadingScreen';
+import { ChatInterface } from '@/components/chat/ChatInterface';
+import { Sidebar } from '@/components/layout/Sidebar';
+import { AuthScreen } from '@/components/auth/AuthScreen';
+import LoadingScreen from '@/components/ui/LoadingScreen';
 import { db } from '@/lib/firebase';
 import {
   collection,
@@ -17,25 +17,16 @@ import {
   orderBy,
   limit,
   getDocs,
+  getDoc,
+  deleteDoc,
   serverTimestamp,
 } from 'firebase/firestore';
-
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-interface Conversation {
-  id: string;
-  title: string;
-  updatedAt: Date;
-}
+import { Message, Conversation } from '@/types/chat';
 
 export default function Home() {
-  const { user, loading, signIn, signUp, logout } = useAuth();
-  const [showAuthModal, setShowAuthModal] = useState(false);
+  const { user, loading } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
 
@@ -58,7 +49,10 @@ export default function Home() {
         convs.push({
           id: doc.id,
           title: data.title || 'New Chat',
+          userId: data.userId || user.uid,
+          createdAt: data.createdAt?.toDate() || new Date(),
           updatedAt: data.updatedAt?.toDate() || new Date(),
+          messages: data.messages || [],
         });
       });
 
@@ -69,18 +63,18 @@ export default function Home() {
   }, [user]);
 
   useEffect(() => {
-    if (!loading && !user) {
-      setShowAuthModal(true);
-    } else if (user) {
-      setShowAuthModal(false);
+    if (user) {
       loadConversations();
     }
-  }, [user, loading, loadConversations]);
+  }, [user, loadConversations]);
 
   const saveConversation = async (msgs: Message[]) => {
     if (!user || msgs.length === 0) return;
 
     try {
+      const lastMessage = msgs[msgs.length - 1];
+      if (lastMessage.role !== 'assistant') return; // Only save after assistant response
+
       const title = msgs[0].content.slice(0, 30) + (msgs[0].content.length > 30 ? '...' : '');
 
       if (currentConversationId) {
@@ -99,19 +93,24 @@ export default function Home() {
           updatedAt: serverTimestamp(),
         });
         setCurrentConversationId(docRef.id);
+        loadConversations(); // Refresh list
       }
-
-      await loadConversations();
     } catch (error) {
       console.error('Error saving conversation:', error);
     }
   };
 
-  const handleSendMessage = async (content: string) => {
-    const userMessage: Message = { role: 'user', content };
+  const handleSendMessage = async (content: string, images?: string[]) => {
+    const userMessage: Message = { 
+      id: Date.now().toString(),
+      role: 'user', 
+      content,
+      images,
+      timestamp: new Date()
+    };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
-    setIsLoading(true);
+    setIsStreaming(true);
 
     try {
       const response = await fetch('/api/chat', {
@@ -141,8 +140,23 @@ export default function Home() {
 
               try {
                 const parsed = JSON.parse(data);
-                assistantMessage += parsed.content;
-                setMessages([...newMessages, { role: 'assistant' as const, content: assistantMessage }]);
+                if (parsed.content) {
+                  assistantMessage += parsed.content;
+                  // Update the last message (assistant's response) in real-time
+                  setMessages((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last.role === 'assistant') {
+                      return [...prev.slice(0, -1), { ...last, content: assistantMessage }];
+                    } else {
+                      return [...prev, { 
+                        id: (Date.now() + 1).toString(),
+                        role: 'assistant', 
+                        content: assistantMessage,
+                        timestamp: new Date()
+                      }];
+                    }
+                  });
+                }
               } catch {
                 // Ignore parsing errors
               }
@@ -150,74 +164,94 @@ export default function Home() {
           }
         }
       }
+      
+      // Save conversation after streaming is complete
+      const finalMessages = [...newMessages, { 
+        id: (Date.now() + 1).toString(),
+        role: 'assistant' as const, 
+        content: assistantMessage,
+        timestamp: new Date()
+      }];
+      saveConversation(finalMessages);
 
-      const finalMessages: Message[] = [...newMessages, { role: 'assistant' as const, content: assistantMessage }];
-      setMessages(finalMessages);
-      await saveConversation(finalMessages);
     } catch (error) {
-      console.error('Error:', error);
-      setMessages([...newMessages, { role: 'assistant' as const, content: 'Sorry, an error occurred.' }]);
+      console.error('Error sending message:', error);
+      setMessages((prev) => [...prev, { 
+        id: Date.now().toString(),
+        role: 'assistant', 
+        content: 'Sorry, I encountered an error. Please try again.',
+        timestamp: new Date()
+      }]);
     } finally {
-      setIsLoading(false);
+      setIsStreaming(false);
     }
   };
 
-  const handleNewChat = () => {
+  const startNewChat = () => {
     setMessages([]);
     setCurrentConversationId(null);
   };
 
   const handleSelectConversation = async (id: string) => {
+    setCurrentConversationId(id);
     try {
-      const docSnap = await getDocs(query(collection(db, 'conversations'), where('__name__', '==', id)));
-      if (!docSnap.empty) {
-        const data = docSnap.docs[0].data();
-        setMessages(data.messages || []);
-        setCurrentConversationId(id);
-      }
+        const docRef = doc(db, 'conversations', id);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (data.messages) {
+                // Ensure messages have required fields if they are old data
+                const validMessages = data.messages.map((m: any) => ({
+                    ...m,
+                    id: m.id || Math.random().toString(),
+                    timestamp: m.timestamp ? m.timestamp.toDate() : new Date() // Firestore timestamp to Date
+                }));
+                setMessages(validMessages);
+            }
+        }
     } catch (error) {
-      console.error('Error loading conversation:', error);
+        console.error("Error loading conversation", error);
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    setMessages([]);
-    setConversations([]);
-    setCurrentConversationId(null);
+  const deleteConversation = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this conversation?')) return;
+    
+    try {
+        await deleteDoc(doc(db, 'conversations', id));
+        if (currentConversationId === id) {
+            startNewChat();
+        }
+        loadConversations();
+    } catch (error) {
+        console.error("Error deleting conversation", error);
+    }
   };
 
   if (loading) {
     return <LoadingScreen />;
   }
 
-  return (
-    <div className="flex h-screen">
-      {user && (
-        <Sidebar
-          conversations={conversations}
-          currentConversationId={currentConversationId}
-          onNewChat={handleNewChat}
-          onSelectConversation={handleSelectConversation}
-          onLogout={handleLogout}
-          userEmail={user.email}
-        />
-      )}
+  if (!user) {
+    return <AuthScreen />;
+  }
 
-      <div className="flex-1">
+  return (
+    <div className="flex h-screen bg-background">
+      <Sidebar
+        conversations={conversations}
+        currentConversationId={currentConversationId}
+        onNewChat={startNewChat}
+        onSelectConversation={handleSelectConversation}
+        onDeleteConversation={deleteConversation}
+      />
+      <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
         <ChatInterface
           messages={messages}
+          isStreaming={isStreaming}
           onSendMessage={handleSendMessage}
-          isLoading={isLoading}
         />
-      </div>
-
-      <AuthModal
-        isOpen={showAuthModal}
-        onClose={() => setShowAuthModal(false)}
-        onSignIn={signIn}
-        onSignUp={signUp}
-      />
+      </main>
     </div>
   );
 }
