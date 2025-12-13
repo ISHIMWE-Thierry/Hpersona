@@ -100,7 +100,7 @@ export default function Home() {
     }
   };
 
-  const handleSendMessage = async (content: string, images?: string[]) => {
+  const handleSendMessage = async (content: string, images?: string[], mode?: 'gpt' | 'thinking') => {
     const userMessage: Message = { 
       id: Date.now().toString(),
       role: 'user', 
@@ -116,7 +116,7 @@ export default function Home() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages }),
+        body: JSON.stringify({ messages: newMessages, mode: mode || 'gpt' }),
       });
 
       if (!response.ok) throw new Error('Failed to get response');

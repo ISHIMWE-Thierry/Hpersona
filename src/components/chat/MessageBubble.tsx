@@ -1,6 +1,10 @@
 import { Message } from '@/types/chat';
 import { cn } from '@/lib/utils';
 import { User, Bot } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 
 interface MessageBubbleProps {
   message: Message;
@@ -56,9 +60,41 @@ export function MessageBubble({ message, className, style }: MessageBubbleProps)
           </div>
         )}
 
-        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-          {message.content}
-        </p>
+        {/* Render content with markdown and math support */}
+        {isUser ? (
+          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+            {message.content}
+          </p>
+        ) : (
+          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:bg-background/50 prose-pre:border prose-pre:border-border prose-code:text-primary prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none">
+            <ReactMarkdown
+              remarkPlugins={[remarkMath]}
+              rehypePlugins={[rehypeKatex]}
+              components={{
+                // Custom rendering for code blocks
+                code({ node, inline, className, children, ...props }: any) {
+                  return inline ? (
+                    <code className={className} {...props}>
+                      {children}
+                    </code>
+                  ) : (
+                    <pre className="overflow-x-auto p-3 rounded-lg">
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
+                    </pre>
+                  );
+                },
+                // Better paragraph handling
+                p({ children }) {
+                  return <p className="mb-2 last:mb-0">{children}</p>;
+                },
+              }}
+            >
+              {message.content}
+            </ReactMarkdown>
+          </div>
+        )}
         {message.timestamp && (
           <span className={cn(
             "text-xs mt-1 block",
