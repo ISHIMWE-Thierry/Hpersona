@@ -313,8 +313,6 @@ function AppContent() {
           messages={currentConversation?.messages || []}
           isStreaming={isStreaming}
           onSendMessage={handleSendMessage}
-          selectedModel={selectedModel}
-          onModelChange={setSelectedModel}
         />
       </main>
     </div>

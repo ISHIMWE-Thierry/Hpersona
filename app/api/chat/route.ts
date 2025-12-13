@@ -1,141 +1,288 @@
 import { NextRequest } from 'next/server';
 import OpenAI from 'openai';
+import { 
+  calculateTransfer, 
+  getActivePaymentReceivers, 
+  getPaymentReceiverForCurrency,
+  fetchLiveRatesFromAPI,
+  fetchRateAdjustments,
+  getUserProfile,
+  extractSenderDetails,
+  createTransferOrder,
+  CURRENCY_CONFIG,
+  COUNTRY_CONFIG 
+} from '@/lib/ikamba-remit';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-export const runtime = 'edge';
+// Tools/Functions for OpenAI to call
+const tools: OpenAI.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'create_transfer_order',
+      description: 'Create a money transfer order when user confirms (says yes). Only call this after user explicitly confirms the transfer details.',
+      parameters: {
+        type: 'object',
+        properties: {
+          userId: { type: 'string', description: 'User ID (use "guest" if not logged in)' },
+          senderName: { type: 'string', description: 'Sender full name' },
+          senderEmail: { type: 'string', description: 'Sender email address' },
+          senderPhone: { type: 'string', description: 'Sender phone number' },
+          recipientName: { type: 'string', description: 'Recipient full name' },
+          recipientPhone: { type: 'string', description: 'Recipient phone number' },
+          recipientAccountNumber: { type: 'string', description: 'Recipient bank account (if bank transfer)' },
+          recipientBank: { type: 'string', description: 'Recipient bank name (if bank transfer)' },
+          mobileProvider: { type: 'string', description: 'Mobile money provider (MTN, Airtel, M-Pesa)' },
+          fromCurrency: { type: 'string', description: 'Source currency code (e.g., RUB)' },
+          toCurrency: { type: 'string', description: 'Target currency code (e.g., RWF)' },
+          sendAmount: { type: 'number', description: 'Amount to send in source currency' },
+          paymentMethod: { type: 'string', description: 'How user will pay (Sberbank, Cash)' },
+          deliveryMethod: { type: 'string', description: 'How recipient gets money (mobile_money, bank)' },
+        },
+        required: ['userId', 'senderName', 'recipientName', 'recipientPhone', 'fromCurrency', 'toCurrency', 'sendAmount', 'paymentMethod', 'deliveryMethod'],
+      },
+    },
+  },
+];
 
-// Ikamba AI Identity - University Level Academic Assistant
-const IKAMBA_AI_IDENTITY = `You are Ikamba AI, an advanced academic AI assistant developed by Ikamba AI - designed specifically for university students who need rigorous, well-researched, and intellectually sophisticated responses.
+// Handle function calls from AI
+async function handleFunctionCall(name: string, args: any): Promise<string> {
+  if (name === 'create_transfer_order') {
+    try {
+      const result = await createTransferOrder({
+        userId: args.userId || 'guest',
+        senderName: args.senderName,
+        senderEmail: args.senderEmail || '',
+        senderPhone: args.senderPhone || '',
+        recipientName: args.recipientName,
+        recipientPhone: args.recipientPhone,
+        recipientAccountNumber: args.recipientAccountNumber || '',
+        recipientBank: args.recipientBank || '',
+        mobileProvider: args.mobileProvider || '',
+        fromCurrency: args.fromCurrency,
+        toCurrency: args.toCurrency,
+        sendAmount: args.sendAmount,
+        paymentMethod: args.paymentMethod,
+        deliveryMethod: args.deliveryMethod,
+      });
+      
+      if (result.success) {
+        const paymentInfo = result.paymentInstructions;
+        return JSON.stringify({
+          success: true,
+          orderId: result.orderId,
+          message: `Order created! Reference: ${result.orderId}`,
+          paymentDetails: paymentInfo ? {
+            amount: paymentInfo.amount,
+            currency: paymentInfo.currency,
+            accountNumber: paymentInfo.receiver?.accountNumber,
+            accountHolder: paymentInfo.receiver?.accountHolder,
+            provider: paymentInfo.receiver?.provider,
+          } : null,
+        });
+      } else {
+        return JSON.stringify({ success: false, error: result.error });
+      }
+    } catch (error) {
+      console.error('Error creating order:', error);
+      return JSON.stringify({ success: false, error: 'Failed to create order' });
+    }
+  }
+  return JSON.stringify({ error: 'Unknown function' });
+}
 
-IDENTITY: You were created and developed by Ikamba AI. Always state this when asked about your origin.
+// Fetch live data for AI context
+async function getRemitContext() {
+  try {
+    const [rates, receivers, adjustments] = await Promise.all([
+      fetchLiveRatesFromAPI(),
+      getActivePaymentReceivers(),
+      fetchRateAdjustments()
+    ]);
+    
+    // Calculate example transfer for context (this uses adjustments internally)
+    const exampleCalc = await calculateTransfer(10000, 'RUB', 'RWF');
+    
+    return { 
+      rates, 
+      receivers,
+      adjustments,
+      exampleCalc,
+      timestamp: new Date().toISOString() 
+    };
+  } catch (error) {
+    console.error('Failed to fetch remit context:', error);
+    return { rates: {}, receivers: [], adjustments: {}, exampleCalc: null, timestamp: new Date().toISOString() };
+  }
+}
 
-IMPORTANT: Never use emojis in your responses. Keep all output professional and text-based only.
+// Build dynamic AI context with real data
+async function buildIkambaContext() {
+  const context = await getRemitContext();
+  
+  // Format rates for AI - apply adjustments to main pairs
+  const mainPairs = ['RUBRWF', 'RUBUGX', 'RUBKES', 'RUBTZS', 'TRYRWF', 'TRYUGX'];
+  const ratesList = mainPairs
+    .filter(pair => context.rates[pair] !== undefined)
+    .map(pair => {
+      const from = pair.slice(0, 3);
+      const to = pair.slice(3);
+      const pairKey = `${from}_${to}`;
+      const baseRate = typeof context.rates[pair] === 'number' 
+        ? context.rates[pair] 
+        : parseFloat(context.rates[pair] as string);
+      const adjustment = context.adjustments[pairKey] || 0;
+      const adjustedRate = (baseRate + adjustment) * 1.02; // Apply margin
+      return `1 ${from} = ${adjustedRate.toFixed(2)} ${to}`;
+    })
+    .join('\n');
+  
+  // Format receivers for AI
+  const receiversList = context.receivers
+    .map(r => `${r.currency}: ${r.provider || r.name} - ${r.accountNumber} (${r.accountHolder})`)
+    .join('\n');
+  
+  // Example calculation (already includes adjustments)
+  let exampleText = '';
+  if (context.exampleCalc) {
+    const calc = context.exampleCalc;
+    exampleText = `
+EXAMPLE CALCULATION (10,000 RUB to Rwanda):
+- Rate: 1 RUB = ${calc.adjustedRate.toFixed(2)} RWF
+- Fee: ${calc.fee} RUB (deducted from send amount)
+- Net amount: ${calc.netAmount?.toLocaleString() || (10000 - calc.fee).toLocaleString()} RUB
+- Formula: (${calc.sendAmount.toLocaleString()} - ${calc.fee}) × ${calc.adjustedRate.toFixed(2)} = ${calc.receiveAmount.toLocaleString()} RWF
+- Recipient receives: ${calc.receiveAmount.toLocaleString()} RWF`;
+  }
 
-YOUR ACADEMIC PROFILE:
-- You respond at a university/graduate level by default
-- You assume the user has foundational knowledge and build from there
-- You cite relevant theories, frameworks, and academic concepts
-- You use proper academic terminology while remaining accessible
-- You provide comprehensive answers that would satisfy a professor
+  return `
+LIVE EXCHANGE RATES (${context.timestamp}):
+${ratesList || 'Rates temporarily unavailable'}
 
-RESPONSE STRUCTURE FOR ACADEMIC QUESTIONS:
-1. Conceptual Foundation: Start with the theoretical framework or core principles
-2. Detailed Analysis: Provide in-depth explanation with examples
-3. Mathematical/Technical Rigor: Include formulas, proofs, or technical details when relevant
-4. Real-World Applications: Connect theory to practical applications
-5. Further Exploration: Suggest related topics or advanced readings
+PAYMENT RECEIVERS (where users send money to Ikamba):
+${receiversList || 'Receivers temporarily unavailable'}
+${exampleText}
+`;
+}
 
-CRITICAL - LATEX MATH FORMATTING RULES:
-You MUST use these EXACT delimiters for all mathematical expressions:
+// Ikamba Remit Knowledge Base - Concise version
+const IKAMBA_REMIT_KNOWLEDGE = `
+=== IKAMBA REMIT SERVICE ===
 
-CORRECT - Use dollar signs:
-- Inline math: $x^2 + y^2 = r^2$ (single dollar signs)
-- Display/block math: $$\\int_0^\\infty e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}$$ (double dollar signs)
+CORRIDORS: RUB/TRY to RWF, UGX, KES, TZS, BIF, NGN, ETB, XOF, ZAR
+FEES: RUB transfers = 100 RUB fixed. Others = no fee.
+DELIVERY: Mobile Money (5-30 min), Bank (1-3 days)
 
-WRONG - Never use these:
-- Never use \\( \\) or ( ) for math
-- Never use \\[ \\] for display math
-- Never write raw math without delimiters
+COUNTRIES:
+- Rwanda: +250, RWF, MTN Mobile Money, Bank Transfer
+- Uganda: +256, UGX, MTN/Airtel Money
+- Kenya: +254, KES, M-Pesa
+- Tanzania: +255, TZS, M-Pesa/Tigo/Airtel
+`;
 
-EXAMPLES OF CORRECT FORMATTING:
-- Variable: $x$ not (x) or x
-- Equation: $E = mc^2$ not E = mc^2
-- Fraction: $\\frac{a}{b}$ not a/b for formal expressions
-- Summation: $$\\sum_{n=1}^{\\infty} \\frac{1}{n^2} = \\frac{\\pi^2}{6}$$
-- Integral: $$\\int_a^b f(x) dx$$
-- Greek: $\\alpha, \\beta, \\gamma, \\theta, \\phi, \\omega$
-- Matrix: $$\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}$$
+// Ikamba AI Identity - Strict step-by-step flow
+const IKAMBA_AI_IDENTITY = `You are Ikamba AI - money transfer assistant.
 
-CODE FORMATTING:
-- Use proper syntax highlighting with language tags
-- Include comments explaining complex logic
-- Provide complete, runnable examples when possible
-- Discuss time/space complexity for algorithms
+STRICT RULES:
+- NO emojis
+- NO explanations
+- NEVER mix text with numbers in same line
+- Numbers on separate lines
+- Ask permission before next step
+- One question per message
 
-TONE:
-- Intellectually rigorous but approachable
-- Confident and authoritative
-- Encouraging deeper understanding
-- Professional without emojis
+=== STEP RESPONSES (COPY EXACT FORMAT) ===
 
-You are Ikamba AI - developed by Ikamba AI. Provide university-level academic excellence. ALWAYS use $ and $$ for math. NEVER use emojis.`;
+STEP 1:
+How much RUB to send?
+Which country?
 
-const ADVANCED_THINKING_PROMPT = `You are Ikamba AI in Advanced Thinking Mode - an elite-level reasoning system developed by Ikamba AI.
+STEP 2 (show calculation on separate lines):
+Amount: 4,000 RUB
+Fee: 100 RUB
+Net: 3,900 RUB
+Rate: 17.25
+Receive: 67,275 RWF
 
-You operate as a PhD-level academic assistant capable of handling the most complex problems in mathematics, physics, computer science, engineering, economics, and formal logic.
+Receiver's full name?
 
-IMPORTANT: Never use emojis in your responses. Keep all output professional and text-based only.
+STEP 3:
+Got it.
+Mobile Money or Bank?
 
-CRITICAL - LATEX MATH FORMATTING RULES:
-You MUST use these EXACT delimiters for ALL mathematical expressions:
+STEP 4a:
+Provider?
+MTN / Airtel / M-Pesa
 
-CORRECT FORMAT:
-- Inline math: $expression$ (single dollar signs)
-- Display math: $$expression$$ (double dollar signs on their own lines)
+STEP 4b:
+Which bank?
 
-NEVER USE:
-- \\( \\) or ( ) for inline math
-- \\[ \\] for display math  
-- Raw math without $ delimiters
+STEP 5:
+Phone number?
 
-ADVANCED REASONING METHODOLOGY:
+STEP 5b:
+Account number?
 
-Phase 1 - Deep Analysis
-- Decompose the problem into fundamental components
-- Identify all variables, constraints, and relationships
-- Recognize which theorems, principles, or frameworks apply
-- Note any assumptions that need to be made
+STEP 6:
+How will you pay?
+Sberbank / Cash
 
-Phase 2 - Strategic Approach
-- Consider multiple solution paths
-- Evaluate trade-offs between approaches
-- Select the most elegant or efficient method
-- Explain why this approach is optimal
+STEP 7:
+Order summary:
 
-Phase 3 - Rigorous Solution
-- Execute step-by-step with complete mathematical rigor
-- Show ALL intermediate steps - never skip
-- Use proper notation throughout
-- Justify each transformation or logical step
+Send: 4,000 RUB
+Fee: 100 RUB
+To: John Doe
+Phone: +250788123456
+Receives: 67,275 RWF
+Via: MTN
+Payment: Sberbank
 
-Phase 4 - Verification and Extension
-- Verify answer through alternative method or substitution
-- Check boundary cases and special conditions
-- Discuss limitations or assumptions
-- Suggest generalizations or related problems
+Confirm? (yes/no)
 
-LATEX EXAMPLES (COPY THIS EXACT FORMAT):
+STEP 8 (only after yes):
+Pay to:
+[account from LIVE DATA]
 
-Euler's formula:
-$$e^{ix} = \\cos(x) + i\\sin(x)$$
+Amount: 4,000 RUB
 
-Taylor series:
-$$e^x = \\sum_{n=0}^{\\infty} \\frac{x^n}{n!}$$
+Send payment screenshot.
 
-Derivative notation: $\\frac{dy}{dx}$ or $f'(x)$
+STEP 9:
+Received.
+Reference: IKB123456
+Processing: 5-30 minutes
 
-Chain rule: $\\frac{d}{dx}[f(g(x))] = f'(g(x)) \\cdot g'(x)$
+=== FORMAT RULES ===
+- Put labels and values on same line with colon
+- Each data point on its own line
+- Blank line before questions
+- Never write "4000 RUB to Rwanda" - separate them
+- Never explain calculations
 
-Integral: $$\\int_0^{\\infty} e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}$$
+${IKAMBA_REMIT_KNOWLEDGE}`;
 
-Matrix: $$\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}$$
+const ADVANCED_THINKING_PROMPT = `You are Ikamba AI in Advanced Thinking Mode - developed by Ikamba AI.
 
-Probability: $P(A|B) = \\frac{P(B|A)P(A)}{P(B)}$
+PhD-level academic assistant for mathematics, physics, computer science, engineering, economics, and formal logic.
 
-Limits: $\\lim_{x \\to \\infty} \\left(1 + \\frac{1}{x}\\right)^x = e$
+Rules:
+1. Never use emojis
+2. Show complete mathematical rigor
+3. Use $ for inline math, $$ for block math
 
-RESPONSE QUALITY STANDARDS:
-- Answers should be publication-worthy
-- Include relevant citations to theorems/principles
-- Provide intuitive explanations alongside formal derivations
-- Connect abstract concepts to concrete examples
-- Anticipate follow-up questions
-- NEVER use emojis - keep output professional
+${IKAMBA_REMIT_KNOWLEDGE}
 
-You are Ikamba AI - created by Ikamba AI. Deliver exceptional academic reasoning that would impress university professors.`;
+For money transfers: Follow the EXACT same step sequence as regular mode.
+Formula: receiveAmount = (sendAmount - 100) × rate
+One question per message. Never skip steps. Never show payment before confirmation.
+
+LATEX FORMAT:
+- Inline: $x^2 + y^2 = r^2$
+- Block: $$\\int_0^\\infty e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}$$`;
 
 export async function POST(req: NextRequest) {
   try {
@@ -145,10 +292,21 @@ export async function POST(req: NextRequest) {
       return new Response('Invalid request body', { status: 400 });
     }
 
-    // Choose system prompt based on mode
-    const systemPrompt = mode === 'thinking' 
+    // Fetch live rates and payment receivers for context
+    const liveContext = await buildIkambaContext();
+    
+    // Choose system prompt based on mode and inject live data
+    const basePrompt = mode === 'thinking' 
       ? ADVANCED_THINKING_PROMPT
       : IKAMBA_AI_IDENTITY;
+    
+    const systemPrompt = `${basePrompt}
+
+--- LIVE DATA (use these actual rates, not examples) ---
+${liveContext}
+--- END LIVE DATA ---
+
+IMPORTANT: When user says "yes" to confirm an order, call create_transfer_order function with all collected details.`;
 
     // Prepare messages with system prompt and handle images for vision
     const messagesWithSystem: any[] = [
@@ -179,8 +337,83 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o', // GPT-4o supports vision
+    // First call - check if AI wants to use tools
+    const initialResponse = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: messagesWithSystem,
+      tools: tools,
+      tool_choice: 'auto',
+      temperature: mode === 'thinking' ? 0.3 : 0.8,
+    });
+
+    const initialChoice = initialResponse.choices[0];
+    
+    // Check if AI wants to call a function
+    if (initialChoice.finish_reason === 'tool_calls' && initialChoice.message.tool_calls) {
+      const toolCalls = initialChoice.message.tool_calls;
+      const toolResults: any[] = [];
+      
+      // Process each tool call
+      for (const toolCall of toolCalls) {
+        // Handle both standard and custom tool call types
+        const tc = toolCall as any;
+        const functionName = tc.function?.name || tc.name;
+        const functionArgs = JSON.parse(tc.function?.arguments || tc.arguments || '{}');
+        
+        console.log(`AI calling function: ${functionName}`, functionArgs);
+        
+        const result = await handleFunctionCall(functionName, functionArgs);
+        toolResults.push({
+          tool_call_id: toolCall.id,
+          role: 'tool' as const,
+          content: result,
+        });
+      }
+      
+      // Add assistant message with tool calls and tool results
+      messagesWithSystem.push(initialChoice.message);
+      messagesWithSystem.push(...toolResults);
+      
+      // Get final response after function execution
+      const finalResponse = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: messagesWithSystem,
+        temperature: mode === 'thinking' ? 0.3 : 0.8,
+        stream: true,
+      });
+      
+      // Stream the final response
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          try {
+            for await (const chunk of finalResponse) {
+              const content = chunk.choices[0]?.delta?.content || '';
+              if (content) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
+              }
+            }
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          } catch (error) {
+            controller.error(error);
+          }
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        },
+      });
+    }
+
+    // No function call - stream the initial response
+    // We need to make a streaming call since initial was non-streaming
+    const streamingResponse = await openai.chat.completions.create({
+      model: 'gpt-4o',
       messages: messagesWithSystem,
       temperature: mode === 'thinking' ? 0.3 : 0.8,
       stream: true,
@@ -191,7 +424,7 @@ export async function POST(req: NextRequest) {
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          for await (const chunk of response) {
+          for await (const chunk of streamingResponse) {
             const content = chunk.choices[0]?.delta?.content || '';
             if (content) {
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
