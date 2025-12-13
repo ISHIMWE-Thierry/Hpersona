@@ -9,6 +9,10 @@ import {
   getUserProfile,
   extractSenderDetails,
   createTransferOrder,
+  uploadPaymentProof,
+  getLatestUserTransaction,
+  getRecentRecipients,
+  sendPaymentProofReceivedEmail,
   CURRENCY_CONFIG,
   COUNTRY_CONFIG 
 } from '@/lib/ikamba-remit';
@@ -23,14 +27,14 @@ const tools: OpenAI.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'create_transfer_order',
-      description: 'Create a money transfer order when user confirms (says yes). Only call this after user explicitly confirms the transfer details.',
+      description: 'MUST call when user says "yes" to confirm a transfer. Creates the order in database and returns payment details.',
       parameters: {
         type: 'object',
         properties: {
           userId: { type: 'string', description: 'User ID (use "guest" if not logged in)' },
           senderName: { type: 'string', description: 'Sender full name' },
           senderEmail: { type: 'string', description: 'Sender email address' },
-          senderPhone: { type: 'string', description: 'Sender phone number' },
+          senderPhone: { type: 'string', description: 'Sender phone number (required for order updates)' },
           recipientName: { type: 'string', description: 'Recipient full name' },
           recipientPhone: { type: 'string', description: 'Recipient phone number' },
           recipientAccountNumber: { type: 'string', description: 'Recipient bank account (if bank transfer)' },
@@ -42,20 +46,45 @@ const tools: OpenAI.ChatCompletionTool[] = [
           paymentMethod: { type: 'string', description: 'How user will pay (Sberbank, Cash)' },
           deliveryMethod: { type: 'string', description: 'How recipient gets money (mobile_money, bank)' },
         },
-        required: ['userId', 'senderName', 'recipientName', 'recipientPhone', 'fromCurrency', 'toCurrency', 'sendAmount', 'paymentMethod', 'deliveryMethod'],
+        required: ['userId', 'senderName', 'senderPhone', 'recipientName', 'recipientPhone', 'fromCurrency', 'toCurrency', 'sendAmount', 'paymentMethod', 'deliveryMethod'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'upload_payment_proof',
+      description: 'MUST call when user uploads ANY image after payment details were shown. Do NOT describe the image - just call this function to upload it as payment proof.',
+      parameters: {
+        type: 'object',
+        properties: {
+          userId: { type: 'string', description: 'User ID' },
+          transactionId: { type: 'string', description: 'Transaction ID (optional, will use latest)' },
+        },
+        required: ['userId'],
       },
     },
   },
 ];
 
-// Handle function calls from AI
-async function handleFunctionCall(name: string, args: any): Promise<string> {
+// Handle function calls from AI (userInfo passed from request, imageData for proof uploads)
+async function handleFunctionCall(
+  name: string, 
+  args: any, 
+  userInfo?: { userId: string; email: string; displayName: string },
+  imageData?: string
+): Promise<string> {
   if (name === 'create_transfer_order') {
     try {
+      // Use logged in user info if available, otherwise use AI-provided data
+      const userId = userInfo?.userId || args.userId || 'guest';
+      const senderEmail = userInfo?.email || args.senderEmail || '';
+      const senderName = args.senderName || userInfo?.displayName || 'Guest';
+      
       const result = await createTransferOrder({
-        userId: args.userId || 'guest',
-        senderName: args.senderName,
-        senderEmail: args.senderEmail || '',
+        userId,
+        senderName,
+        senderEmail,
         senderPhone: args.senderPhone || '',
         recipientName: args.recipientName,
         recipientPhone: args.recipientPhone,
@@ -91,16 +120,209 @@ async function handleFunctionCall(name: string, args: any): Promise<string> {
       return JSON.stringify({ success: false, error: 'Failed to create order' });
     }
   }
+  
+  if (name === 'upload_payment_proof') {
+    try {
+      const userId = userInfo?.userId || args.userId || 'guest';
+      const conversationContext = args.conversationContext || {};
+      let transactionId = args.transactionId;
+      let transactionData: any = null;
+      
+      // Get the recipient name from conversation context for matching
+      const matchRecipient = conversationContext.recipientName;
+      
+      // If no transaction ID provided, get the latest transaction for this user
+      // Use recipient name matching if available for accuracy
+      if (!transactionId) {
+        const latestTransaction = await getLatestUserTransaction(userId, matchRecipient);
+        if (latestTransaction) {
+          transactionId = latestTransaction.id;
+          transactionData = latestTransaction.data;
+        }
+      } else {
+        // Transaction ID provided, but we still need the transaction data
+        const latestTransaction = await getLatestUserTransaction(userId, matchRecipient);
+        if (latestTransaction) {
+          transactionId = latestTransaction.id;
+          transactionData = latestTransaction.data;
+        }
+      }
+      
+      if (!transactionId) {
+        return JSON.stringify({ 
+          success: false, 
+          error: 'No transaction found. Please create an order first before uploading payment proof.' 
+        });
+      }
+      
+      // Use the image data from the message if available
+      const base64Image = imageData || args.imageData;
+      
+      if (!base64Image) {
+        return JSON.stringify({ 
+          success: false, 
+          error: 'No image provided. Please upload a payment screenshot or receipt.' 
+        });
+      }
+      
+      const result = await uploadPaymentProof(userId, transactionId, undefined, base64Image);
+      
+      if (result.success) {
+        // Extract data with fallbacks - PRIORITIZE conversation context over DB data
+        const senderEmail = userInfo?.email || transactionData?.senderemail || transactionData?.senderEmail || '';
+        const senderName = userInfo?.displayName || transactionData?.sendername || transactionData?.senderName || 'Customer';
+        
+        // Use conversation context first (more accurate for current transfer), then fall back to DB
+        let amount: string;
+        let currency: string;
+        let receiveAmount: string;
+        let receiveCurrency: string;
+        let recipientName: string;
+        
+        // Check if conversation context has data (this is from current chat)
+        if (conversationContext.sendAmount) {
+          amount = String(conversationContext.sendAmount);
+          currency = conversationContext.sendCurrency || 'RUB';
+          receiveAmount = String(conversationContext.receiveAmount || 0);
+          receiveCurrency = conversationContext.receiveCurrency || 'RWF';
+          recipientName = conversationContext.recipientName || transactionData?.recipientName || '';
+          console.log('[upload_payment_proof] Using conversation context:', conversationContext);
+        } else {
+          // Fallback to transaction data from DB
+          let rawAmount = transactionData?.sendAmount || transactionData?.amounttopay || transactionData?.amount || '0';
+          if (typeof rawAmount === 'string') {
+            rawAmount = rawAmount.replace(/[^0-9.]/g, '');
+          }
+          amount = String(parseFloat(rawAmount) || 0);
+          
+          currency = transactionData?.fromCurrency || transactionData?.basecurrency || 'RUB';
+          recipientName = transactionData?.recipientName || transactionData?.recipientsfname || '';
+          
+          let rawReceiveAmount = transactionData?.receiveAmount || transactionData?.recivergets || '0';
+          if (typeof rawReceiveAmount === 'string') {
+            rawReceiveAmount = rawReceiveAmount.replace(/[^0-9.]/g, '');
+          }
+          receiveAmount = String(parseFloat(rawReceiveAmount) || 0);
+          receiveCurrency = transactionData?.toCurrency || transactionData?.transfercurrency || 'RWF';
+          console.log('[upload_payment_proof] Using DB transaction data');
+        }
+        
+        console.log('[upload_payment_proof] Final values:', { amount, currency, receiveAmount, receiveCurrency, recipientName });
+        
+        if (senderEmail) {
+          // Send email asynchronously (don't block response)
+          sendPaymentProofReceivedEmail(
+            senderEmail,
+            senderName,
+            transactionId,
+            amount,
+            currency,
+            recipientName,
+            receiveAmount,
+            receiveCurrency
+          ).catch(e => console.error('Email failed:', e));
+        }
+        
+        return JSON.stringify({
+          success: true,
+          message: 'Payment proof uploaded successfully! Confirmation email sent.',
+          transactionId,
+          proofUrl: result.url,
+          orderDetails: {
+            senderName,
+            senderEmail,
+            recipientName,
+            amount: String(amount),
+            currency,
+            receiveAmount: String(receiveAmount),
+            receiveCurrency,
+          }
+        });
+      } else {
+        return JSON.stringify({ success: false, error: result.error });
+      }
+    } catch (error) {
+      console.error('Error uploading payment proof:', error);
+      return JSON.stringify({ success: false, error: 'Failed to upload payment proof' });
+    }
+  }
+  
   return JSON.stringify({ error: 'Unknown function' });
 }
 
+// Helper: Fix malformed TRANSFER tags that include field names
+function fixMalformedTransferTag(text: string): string {
+  // Match tags with field names like [[TRANSFER:40000:RUB:fee:100:netAmount:39900...]]
+  const malformedMatch = text.match(/\[\[TRANSFER:([^:\]]+):([^:\]]+):fee:([^:\]]+):netAmount:([^:\]]+):rate:([^:\]]+):receiveAmount:([^:\]]+):receiveCurrency:([^\]]+)\]\]/);
+  
+  if (malformedMatch) {
+    const fixed = `[[TRANSFER:${malformedMatch[1]}:${malformedMatch[2]}:${malformedMatch[3]}:${malformedMatch[4]}:${malformedMatch[5]}:${malformedMatch[6]}:${malformedMatch[7]}]]`;
+    console.log('[fixMalformedTransferTag] Fixed malformed tag:', malformedMatch[0], '→', fixed);
+    return text.replace(malformedMatch[0], fixed);
+  }
+  
+  return text;
+}
+
+// Helper: Detect and extract transfer data from verbose AI output
+function extractTransferFromVerboseOutput(text: string): { 
+  found: boolean; 
+  sendAmount?: number;
+  sendCurrency?: string;
+  toCurrency?: string;
+  fee?: number;
+  rate?: number;
+  receiveAmount?: number;
+} {
+  // Look for patterns like "40,000 RUB" or "40000 RUB"
+  const amountMatch = text.match(/(\d[\d,]*)\s*(RUB|TRY)/i);
+  const countryMatch = text.match(/to\s+(Rwanda|Uganda|Kenya|Tanzania)/i);
+  const rateMatch = text.match(/1\s*RUB\s*=\s*([\d.]+)\s*(RWF|UGX|KES|TZS)/i);
+  const feeMatch = text.match(/Fee:\s*(\d+)\s*RUB/i);
+  const receiveMatch = text.match(/([\d,]+)\s*(RWF|UGX|KES|TZS)/i);
+  
+  if (amountMatch && (countryMatch || rateMatch)) {
+    const sendAmount = parseInt(amountMatch[1].replace(/,/g, ''));
+    const sendCurrency = amountMatch[2].toUpperCase();
+    const rate = rateMatch ? parseFloat(rateMatch[1]) : undefined;
+    const fee = feeMatch ? parseInt(feeMatch[1]) : (sendCurrency === 'RUB' ? 100 : 0);
+    let toCurrency = rateMatch ? rateMatch[2].toUpperCase() : undefined;
+    
+    // Map country to currency if needed
+    if (!toCurrency && countryMatch) {
+      const countryMap: Record<string, string> = {
+        'rwanda': 'RWF',
+        'uganda': 'UGX',
+        'kenya': 'KES',
+        'tanzania': 'TZS'
+      };
+      toCurrency = countryMap[countryMatch[1].toLowerCase()];
+    }
+    
+    const receiveAmount = receiveMatch ? parseInt(receiveMatch[1].replace(/,/g, '')) : undefined;
+    
+    return {
+      found: true,
+      sendAmount,
+      sendCurrency,
+      toCurrency,
+      fee,
+      rate,
+      receiveAmount
+    };
+  }
+  
+  return { found: false };
+}
+
 // Fetch live data for AI context
-async function getRemitContext() {
+async function getRemitContext(userId?: string) {
   try {
-    const [rates, receivers, adjustments] = await Promise.all([
+    const [rates, receivers, adjustments, recentRecipients] = await Promise.all([
       fetchLiveRatesFromAPI(),
       getActivePaymentReceivers(),
-      fetchRateAdjustments()
+      fetchRateAdjustments(),
+      userId ? getRecentRecipients(userId) : Promise.resolve([])
     ]);
     
     // Calculate example transfer for context (this uses adjustments internally)
@@ -110,18 +332,19 @@ async function getRemitContext() {
       rates, 
       receivers,
       adjustments,
+      recentRecipients,
       exampleCalc,
       timestamp: new Date().toISOString() 
     };
   } catch (error) {
     console.error('Failed to fetch remit context:', error);
-    return { rates: {}, receivers: [], adjustments: {}, exampleCalc: null, timestamp: new Date().toISOString() };
+    return { rates: {}, receivers: [], adjustments: {}, recentRecipients: [], exampleCalc: null, timestamp: new Date().toISOString() };
   }
 }
 
 // Build dynamic AI context with real data
-async function buildIkambaContext() {
-  const context = await getRemitContext();
+async function buildIkambaContext(userId?: string) {
+  const context = await getRemitContext(userId);
   
   // Format rates for AI - apply adjustments to main pairs
   const mainPairs = ['RUBRWF', 'RUBUGX', 'RUBKES', 'RUBTZS', 'TRYRWF', 'TRYUGX'];
@@ -145,6 +368,31 @@ async function buildIkambaContext() {
     .map(r => `${r.currency}: ${r.provider || r.name} - ${r.accountNumber} (${r.accountHolder})`)
     .join('\n');
   
+  // Format recent recipients
+  let recentRecipientsText = '';
+  let recipientsTagData = '';
+  if (context.recentRecipients && context.recentRecipients.length > 0) {
+    // Human-readable list for context
+    const list = context.recentRecipients.map((r, i) => 
+      `${i+1}. ${r.name} (${r.phone || 'no phone'}) - ${r.bank || r.provider || 'Mobile Money'} - ${r.country || ''}`
+    ).join('\n');
+    
+    // Pre-built tag data for AI to use (pipe-separated: name|phone|provider|bank|country)
+    recipientsTagData = context.recentRecipients.map(r => 
+      `${r.name}|${r.phone || ''}|${r.provider || ''}|${r.bank || ''}|${r.country || ''}`
+    ).join(',');
+    
+    recentRecipientsText = `
+RECENT RECIPIENTS (User has sent money to these people before):
+${list}
+
+TO DISPLAY RECIPIENTS BOX, output this exact tag:
+[[RECIPIENTS:${recipientsTagData}]]
+
+Then ask: "Send to a recent recipient, or enter a new name?"
+`;
+  }
+  
   // Example calculation (already includes adjustments)
   let exampleText = '';
   if (context.exampleCalc) {
@@ -165,6 +413,7 @@ ${ratesList || 'Rates temporarily unavailable'}
 PAYMENT RECEIVERS (where users send money to Ikamba):
 ${receiversList || 'Receivers temporarily unavailable'}
 ${exampleText}
+${recentRecipientsText}
 `;
 }
 
@@ -183,117 +432,181 @@ COUNTRIES:
 - Tanzania: +255, TZS, M-Pesa/Tigo/Airtel
 `;
 
-// Ikamba AI Identity - Strict step-by-step flow
-const IKAMBA_AI_IDENTITY = `You are Ikamba AI - money transfer assistant.
+// Ikamba AI Identity - Strict output format
+const IKAMBA_AI_IDENTITY = `You are Ikamba AI money transfer assistant.
 
-STRICT RULES:
-- NO emojis
-- NO explanations
-- NEVER mix text with numbers in same line
-- Numbers on separate lines
-- Ask permission before next step
-- One question per message
+OUTPUT FORMAT RULES:
+1. NO math explanations - use tags only
+2. NO "let's calculate" or "now calculate"
+3. NO showing formulas or step-by-step math
+4. NO emojis
+5. Short questions only
 
-=== STEP RESPONSES (COPY EXACT FORMAT) ===
+RECENT RECIPIENTS TAG FORMAT:
+If "RECENT RECIPIENTS" are listed in context and user starts a NEW transfer:
+Output this tag with recipient data (pipe-separated: name|phone|provider|bank|country):
+[[RECIPIENTS:John Doe|+250788123456|MTN||Rwanda,Jane Smith|+256700123456|Airtel||Uganda]]
 
-STEP 1:
-How much RUB to send?
-Which country?
+Then ask: "Send to a recent recipient, or enter a new name?"
 
-STEP 2 (show calculation on separate lines):
-Amount: 4,000 RUB
-Fee: 100 RUB
-Net: 3,900 RUB
-Rate: 17.25
-Receive: 67,275 RWF
+When user selects a recipient (e.g., "1" or "John Doe" or "Send to recipient 1"):
+- PRE-FILL recipient name, phone, and provider from context
+- Skip asking for those details
+- Ask: "How much to send? (e.g., 50000 RUB to Rwanda)"
+
+BANNED OUTPUT EXAMPLES (NEVER do this):
+❌ "To send 40,000 RUB to Rwanda, let's calculate..."
+❌ "Exchange Rate: 1 RUB = 17.33 RWF"
+❌ "Fee: 100 RUB (fixed fee...)"
+❌ "Net Amount: 40,000 RUB - 100 RUB = 39,900 RUB"
+❌ "[ 39,900 × 17.33 = 691,467 ]"
+❌ "The recipient will receive 691,467 RWF"
+
+CORRECT OUTPUT:
+✅ [[TRANSFER:40000:RUB:100:39900:17.33:691467:RWF]]
 
 Receiver's full name?
 
-STEP 3:
-Got it.
-Mobile Money or Bank?
+WHEN USER GIVES AMOUNT + COUNTRY:
+Output ONLY the tag + question. NO explanations, NO calculations.
 
-STEP 4a:
-Provider?
-MTN / Airtel / M-Pesa
+TAG FORMAT (CRITICAL - must be EXACT):
+[[TRANSFER:sendAmount:sendCurrency:fee:netAmount:rate:receiveAmount:receiveCurrency]]
 
-STEP 4b:
-Which bank?
+Replace each field with ONLY the NUMBER or CODE (no labels):
+- sendAmount: just the number (e.g., 40000)
+- sendCurrency: 3-letter code (e.g., RUB)
+- fee: just the number (e.g., 100)
+- netAmount: just the number (e.g., 39900)
+- rate: just the decimal (e.g., 17.33)
+- receiveAmount: just the number (e.g., 691467)
+- receiveCurrency: 3-letter code (e.g., RWF)
 
-STEP 5:
-Phone number?
+EXAMPLE INPUT: "Send 40000 RUB to Rwanda"
+CORRECT OUTPUT (exact format):
+[[TRANSFER:40000:RUB:100:39900:17.33:691467:RWF]]
 
-STEP 5b:
-Account number?
+Receiver's full name?
 
-STEP 6:
-How will you pay?
-Sberbank / Cash
+IMPORTANT: You MUST ask "Receiver's full name?" after showing the [[TRANSFER:...]] tag.
 
-STEP 7:
-Order summary:
+WRONG OUTPUT EXAMPLES (NEVER DO THIS):
+❌ [[TRANSFER:40000:RUB:fee:100:netAmount:39900:rate:17.33:receiveAmount:691467:receiveCurrency:RWF]]
+❌ [[TRANSFER:sendAmount:40000:RUB:100...]]
+❌ To send 40,000 RUB to Rwanda, let's calculate...
+❌ Any text explanations
 
-Send: 4,000 RUB
-Fee: 100 RUB
-To: John Doe
-Phone: +250788123456
-Receives: 67,275 RWF
-Via: MTN
-Payment: Sberbank
+The tag renders as a professional calculation box. DO NOT add extra text.
 
-Confirm? (yes/no)
+AFTER USER CONFIRMS (says "yes"):
+1. Call create_transfer_order with ALL collected details
+2. Function returns paymentDetails object  
+3. Use paymentDetails to output:
 
-STEP 8 (only after yes):
-Pay to:
-[account from LIVE DATA]
+[[PAYMENT:{amount}:{currency}:{accountNumber}:{accountHolder}:{provider}:]]
 
-Amount: 4,000 RUB
+Upload payment proof.
 
-Send payment screenshot.
+Example (replace with actual values from function response):
+[[PAYMENT:40000:RUB:2202208804613132:Joseph:Sberbank:]]
 
-STEP 9:
-Received.
-Reference: IKB123456
-Processing: 5-30 minutes
+Upload payment proof.
 
-=== FORMAT RULES ===
-- Put labels and values on same line with colon
-- Each data point on its own line
-- Blank line before questions
-- Never write "4000 RUB to Rwanda" - separate them
-- Never explain calculations
+DO NOT write "Please make the payment to..." - just show the tag.
+
+CONVERSATION STEPS (MUST follow EXACTLY in order):
+
+IF RECENT RECIPIENTS EXIST (logged-in user with history):
+Step 0: Show [[RECIPIENTS:...]] tag + "Send to a recent recipient, or enter a new name?"
+- If user selects a recipient (e.g., "1", "Send to recipient 1"): Store name/phone/provider, ask "How much to send? (e.g., 50000 RUB to Rwanda)"
+- If user enters a new name: Continue with Step 1 normally
+
+SHORTCUT FLOW (when user selects recent recipient):
+1. User selects recipient → REMEMBER: name, phone, provider from RECIPIENTS list
+2. Ask: "How much to send? (e.g., 50000 RUB to Rwanda)"
+3. User gives amount → Show [[TRANSFER:...]] tag with calculation
+4. Ask: "Your phone number?" (sender phone)
+5. User gives phone → Ask: "Payment method? Sberbank / Cash"
+6. User gives method → Show summary + "Confirm? (yes/no)"
+7. User says "yes" → MUST call create_transfer_order with ALL details
+8. Show [[PAYMENT:...]] tag + "Upload payment proof"
+
+NORMAL FLOW (new recipient):
+Step 1: User gives amount + country → [[TRANSFER:...]] tag + "Receiver's full name?"
+Step 2: User gives name → "Mobile Money or Bank?"
+Step 3: User chooses method → If Mobile: "Provider? MTN/Airtel/M-Pesa" | If Bank: "Bank name?"
+Step 4: User gives provider/bank → "Recipient phone? (include country code)"
+Step 5: User gives recipient phone → "Your phone number?"
+Step 6: User gives sender phone → "Payment method? Sberbank / Cash"
+Step 7: User gives payment method → Summary + "Confirm? (yes/no)"
+Step 8: User says "yes" → MUST call create_transfer_order
+Step 9: Show [[PAYMENT:...]] + "Upload payment proof"
+Step 10: User uploads image → [[SUCCESS:...]]
+
+CRITICAL - WHEN USER CONFIRMS:
+When user says "yes", "confirm", "ok", "proceed":
+1. YOU MUST call the create_transfer_order function with these parameters:
+   - userId: from logged-in user
+   - senderName: from user info
+   - senderPhone: collected in conversation
+   - recipientName: collected (from recent recipient or user input)
+   - recipientPhone: collected
+   - mobileProvider: collected (if mobile money)
+   - fromCurrency: e.g., "RUB"
+   - toCurrency: e.g., "RWF" 
+   - sendAmount: the number user specified
+   - paymentMethod: "Sberbank" or "Cash"
+   - deliveryMethod: "mobile_money" or "bank"
+
+2. ONLY AFTER create_transfer_order returns success, show [[PAYMENT:...]] tag
+
+DO NOT show payment details without calling create_transfer_order first!
+
+CRITICAL RULES:
+- NEVER skip steps
+- ALWAYS call create_transfer_order when user confirms
+- ONE question at a time
+- Follow the exact sequence
+- If missing data when user says "yes": "I need [missing] first"
+
+CALCULATION (internal only, never show):
+fee = 100 RUB (fixed for RUB transfers)
+netAmount = sendAmount - 100
+receiveAmount = netAmount × rate
 
 ${IKAMBA_REMIT_KNOWLEDGE}`;
 
-const ADVANCED_THINKING_PROMPT = `You are Ikamba AI in Advanced Thinking Mode - developed by Ikamba AI.
+const ADVANCED_THINKING_PROMPT = `You are Ikamba AI in Advanced Thinking Mode.
 
-PhD-level academic assistant for mathematics, physics, computer science, engineering, economics, and formal logic.
+For ACADEMIC questions (math, physics, etc.):
+- Show mathematical rigor
+- Use $ for inline math, $$ for block math
+- No emojis
 
-Rules:
-1. Never use emojis
-2. Show complete mathematical rigor
-3. Use $ for inline math, $$ for block math
+For MONEY TRANSFERS:
+Use the same tag format as regular mode:
+[[TRANSFER:sendAmount:sendCurrency:fee:netAmount:rate:receiveAmount:receiveCurrency]]
+[[PAYMENT:amount:currency:cardNumber:cardholderName:bankName:]]
+[[SUCCESS:orderId:senderName:senderEmail:recipientName:amount:currency:receiveAmount:receiveCurrency]]
 
-${IKAMBA_REMIT_KNOWLEDGE}
-
-For money transfers: Follow the EXACT same step sequence as regular mode.
-Formula: receiveAmount = (sendAmount - 100) × rate
-One question per message. Never skip steps. Never show payment before confirmation.
-
-LATEX FORMAT:
-- Inline: $x^2 + y^2 = r^2$
-- Block: $$\\int_0^\\infty e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}$$`;
+${IKAMBA_REMIT_KNOWLEDGE}`;
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages, mode = 'gpt' } = await req.json();
+    const { messages, mode = 'gpt', userInfo } = await req.json();
 
     if (!messages || !Array.isArray(messages)) {
       return new Response('Invalid request body', { status: 400 });
     }
 
     // Fetch live rates and payment receivers for context
-    const liveContext = await buildIkambaContext();
+    const liveContext = await buildIkambaContext(userInfo?.userId);
+    
+    // Build user context for the AI
+    let userContext = '';
+    if (userInfo) {
+      userContext = `\n\nLOGGED IN USER:\n- User ID: ${userInfo.userId}\n- Email: ${userInfo.email || 'not set'}\n- Name: ${userInfo.displayName || 'not set'}\n\nWhen creating orders, use this user's ID and email.`;
+    }
     
     // Choose system prompt based on mode and inject live data
     const basePrompt = mode === 'thinking' 
@@ -304,17 +617,47 @@ export async function POST(req: NextRequest) {
 
 --- LIVE DATA (use these actual rates, not examples) ---
 ${liveContext}
---- END LIVE DATA ---
+--- END LIVE DATA ---${userContext}
 
-IMPORTANT: When user says "yes" to confirm an order, call create_transfer_order function with all collected details.`;
+⚠️ CRITICAL OUTPUT FORMAT ⚠️
+NEVER write explanatory text for calculations. ONLY use tags:
+- Transfer calculation: [[TRANSFER:...]]
+- Payment details: [[PAYMENT:...]]
+- Success confirmation: [[SUCCESS:...]]
+
+BANNED phrases (will fail if used):
+- "To send X to Y, let's calculate"
+- "Exchange Rate: 1 RUB ="
+- "Fee: 100 RUB"
+- "Net Amount:"
+- "The recipient will receive"
+- Any mathematical explanations
+
+CRITICAL FUNCTION CALL RULES:
+1. When user says "yes" to confirm: MUST call create_transfer_order function
+2. After create_transfer_order returns success: Extract paymentDetails from response and show [[PAYMENT:...]] tag
+3. When user uploads an image after payment shown: MUST call upload_payment_proof function
+4. After upload_payment_proof succeeds: show [[SUCCESS:...]] tag with order details from response
+5. NEVER describe payment screenshots - call upload_payment_proof instead
+
+FORMAT AFTER FUNCTION CALLS:
+- create_transfer_order returns → Show: [[PAYMENT:amount:currency:accountNumber:accountHolder:provider:]]
+- upload_payment_proof returns → Show: [[SUCCESS:orderId:senderName:email:recipientName:amount:currency:receiveAmount:receiveCurrency]]`;
 
     // Prepare messages with system prompt and handle images for vision
     const messagesWithSystem: any[] = [
       { role: 'system', content: systemPrompt },
     ];
 
+    // Track the latest user image for payment proof uploads
+    let latestUserImage: string | undefined;
+    let lastMessageHasImage = false;
+
     // Process each message, handling images if present
-    for (const m of messages) {
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      const isLastMessage = i === messages.length - 1;
+      
       if (m.images && m.images.length > 0) {
         // Create a message with text and images for vision
         const content: any[] = [];
@@ -328,6 +671,13 @@ IMPORTANT: When user says "yes" to confirm an order, call create_transfer_order 
             type: 'image_url',
             image_url: { url: imageUrl }
           });
+          // Save the latest user image (for payment proof uploads)
+          if (m.role === 'user') {
+            latestUserImage = imageUrl;
+            if (isLastMessage) {
+              lastMessageHasImage = true;
+            }
+          }
         }
         
         messagesWithSystem.push({ role: m.role, content });
@@ -337,13 +687,136 @@ IMPORTANT: When user says "yes" to confirm an order, call create_transfer_order 
       }
     }
 
+    // Check if we should force upload_payment_proof call
+    // Only if the LAST message has an image (user just uploaded it)
+    const hasRecentImage = lastMessageHasImage && latestUserImage !== undefined;
+    const conversationText = messages.map((m: any) => m.content || '').join(' ').toLowerCase();
+    
+    // Check for payment context - look for payment box tag or payment-related words
+    const hasPaymentTag = messages.some((m: any) => 
+      m.role === 'assistant' && m.content && 
+      (m.content.includes('[[PAYMENT:') || m.content.includes('Upload payment'))
+    );
+    const hasPaymentContext = hasPaymentTag || 
+                              conversationText.includes('payment') || 
+                              conversationText.includes('sberbank') ||
+                              conversationText.includes('card number') ||
+                              conversationText.includes('upload') ||
+                              conversationText.includes('screenshot') ||
+                              conversationText.includes('proof');
+    
+    // Extract current transaction context from conversation
+    // Look for [[PAYMENT:amount:currency:...]] tag and [[TRANSFER:...]] tag
+    let currentTransactionContext: {
+      sendAmount?: number;
+      sendCurrency?: string;
+      receiveAmount?: number;
+      receiveCurrency?: string;
+      recipientName?: string;
+    } = {};
+    
+    for (const m of messages) {
+      if (m.role === 'assistant' && m.content) {
+        // Extract from TRANSFER tag: [[TRANSFER:sendAmount:sendCurrency:fee:netAmount:rate:receiveAmount:receiveCurrency]]
+        const transferMatch = m.content.match(/\[\[TRANSFER:(\d+):([A-Z]+):(\d+):(\d+):([\d.]+):(\d+):([A-Z]+)\]\]/);
+        if (transferMatch) {
+          currentTransactionContext.sendAmount = parseInt(transferMatch[1]);
+          currentTransactionContext.sendCurrency = transferMatch[2];
+          currentTransactionContext.receiveAmount = parseInt(transferMatch[6]);
+          currentTransactionContext.receiveCurrency = transferMatch[7];
+        }
+        
+        // Extract from PAYMENT tag: [[PAYMENT:amount:currency:...]]
+        const paymentMatch = m.content.match(/\[\[PAYMENT:(\d+):([A-Z]+):/);
+        if (paymentMatch) {
+          currentTransactionContext.sendAmount = parseInt(paymentMatch[1]);
+          currentTransactionContext.sendCurrency = paymentMatch[2];
+        }
+      }
+      
+      // Look for recipient name in user messages or context
+      if (m.role === 'user' && m.content) {
+        // Check for "Send to recipient X: Name" pattern
+        const recipientMatch = m.content.match(/Send to recipient \d+:\s*(.+)/i);
+        if (recipientMatch) {
+          currentTransactionContext.recipientName = recipientMatch[1].trim();
+        }
+      }
+    }
+    
+    console.log('[Context] Extracted from conversation:', currentTransactionContext);
+    
+    // Force upload_payment_proof if image uploaded after payment context
+    if (hasRecentImage && hasPaymentContext && userInfo?.userId) {
+      console.log('Detected image upload in payment context - calling upload_payment_proof');
+      console.log('Image data type:', typeof latestUserImage);
+      console.log('Image data starts with:', latestUserImage?.substring(0, 100));
+      
+      // Pass conversation context to handler
+      const result = await handleFunctionCall(
+        'upload_payment_proof', 
+        { userId: userInfo.userId, conversationContext: currentTransactionContext }, 
+        userInfo, 
+        latestUserImage
+      );
+      const parsedResult = JSON.parse(result);
+      
+      console.log('Upload result:', parsedResult);
+      
+      if (parsedResult.success) {
+        // Return success message with SUCCESS tag
+        const successMessage = `[[SUCCESS:${parsedResult.transactionId || 'ORDER'}:${parsedResult.orderDetails?.senderName || ''}:${parsedResult.orderDetails?.senderEmail || ''}:${parsedResult.orderDetails?.recipientName || ''}:${parsedResult.orderDetails?.amount || ''}:${parsedResult.orderDetails?.currency || 'RUB'}:${parsedResult.orderDetails?.receiveAmount || ''}:${parsedResult.orderDetails?.receiveCurrency || 'RWF'}]]
+
+Transfer is being processed. You will receive confirmation shortly.`;
+        
+        // Return as stream
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: successMessage })}\n\n`));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+          },
+        });
+      } else {
+        // Upload failed - return error message
+        console.error('Payment proof upload failed:', parsedResult.error);
+        const errorMessage = `Sorry, there was an issue uploading your payment proof: ${parsedResult.error || 'Unknown error'}. Please try again.`;
+        
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: errorMessage })}\n\n`));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+          },
+        });
+      }
+    }
+
     // First call - check if AI wants to use tools
     const initialResponse = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages: messagesWithSystem,
       tools: tools,
       tool_choice: 'auto',
-      temperature: mode === 'thinking' ? 0.3 : 0.8,
+      temperature: 0, // Use 0 for strict format compliance
     });
 
     const initialChoice = initialResponse.choices[0];
@@ -362,7 +835,8 @@ IMPORTANT: When user says "yes" to confirm an order, call create_transfer_order 
         
         console.log(`AI calling function: ${functionName}`, functionArgs);
         
-        const result = await handleFunctionCall(functionName, functionArgs);
+        // Pass userInfo and latestUserImage to the function handler
+        const result = await handleFunctionCall(functionName, functionArgs, userInfo, latestUserImage);
         toolResults.push({
           tool_call_id: toolCall.id,
           role: 'tool' as const,
@@ -378,20 +852,37 @@ IMPORTANT: When user says "yes" to confirm an order, call create_transfer_order 
       const finalResponse = await openai.chat.completions.create({
         model: 'gpt-4o',
         messages: messagesWithSystem,
-        temperature: mode === 'thinking' ? 0.3 : 0.8,
+        temperature: 0, // Use 0 for strict format compliance
         stream: true,
       });
       
-      // Stream the final response
+      // Stream the final response with malformed tag fixing
       const encoder = new TextEncoder();
       const stream = new ReadableStream({
         async start(controller) {
           try {
+            let buffer = '';
             for await (const chunk of finalResponse) {
               const content = chunk.choices[0]?.delta?.content || '';
               if (content) {
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
+                buffer += content;
+                
+                // Check if buffer contains a complete [[TRANSFER:...]] tag
+                if (buffer.includes('[[TRANSFER:') && buffer.includes(']]')) {
+                  // Fix malformed tags before sending
+                  buffer = fixMalformedTransferTag(buffer);
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
+                  buffer = '';
+                } else {
+                  // Stream as normal if no tag detected yet
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
+                }
               }
+            }
+            // Send any remaining buffer
+            if (buffer) {
+              buffer = fixMalformedTransferTag(buffer);
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
             }
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
@@ -415,20 +906,37 @@ IMPORTANT: When user says "yes" to confirm an order, call create_transfer_order 
     const streamingResponse = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages: messagesWithSystem,
-      temperature: mode === 'thinking' ? 0.3 : 0.8,
+      temperature: 0, // Use 0 for strict format compliance
       stream: true,
     });
 
-    // Create a streaming response
+    // Create a streaming response with malformed tag fixing
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          let buffer = '';
           for await (const chunk of streamingResponse) {
             const content = chunk.choices[0]?.delta?.content || '';
             if (content) {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
+              buffer += content;
+              
+              // Check if buffer contains a complete [[TRANSFER:...]] tag
+              if (buffer.includes('[[TRANSFER:') && buffer.includes(']]')) {
+                // Fix malformed tags before sending
+                buffer = fixMalformedTransferTag(buffer);
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
+                buffer = '';
+              } else {
+                // Stream as normal if no tag detected yet
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
+              }
             }
+          }
+          // Send any remaining buffer
+          if (buffer) {
+            buffer = fixMalformedTransferTag(buffer);
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
           }
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();

@@ -6,6 +6,7 @@ import { ChatInterface } from '@/components/chat/ChatInterface';
 import { Conversation, Message } from '@/types/chat';
 import { Toaster } from '@/components/ui/sonner';
 import { Loader2 } from 'lucide-react';
+import { DropdownAvatar } from '@/components/profile/DropdownAvatar';
 import { 
   collection, 
   addDoc, 
@@ -308,12 +309,21 @@ function AppContent() {
         onDeleteConversation={handleDeleteConversation}
       />
       
-      <main className="flex-1 lg:ml-0">
-        <ChatInterface
-          messages={currentConversation?.messages || []}
-          isStreaming={isStreaming}
-          onSendMessage={handleSendMessage}
-        />
+      <main className="flex-1 flex flex-col h-screen min-h-0 overflow-hidden">
+        {/* Top header with avatar dropdown - glassmorphic style */}
+        <header className="relative flex items-center justify-center px-4 py-3 border-b border-white/10 bg-white/5 dark:bg-black/20 backdrop-blur-xl backdrop-saturate-150">
+          <h1 className="text-lg font-semibold">Ikamba AI</h1>
+          <div className="absolute right-4">
+            <DropdownAvatar />
+          </div>
+        </header>
+        <div className="flex-1 min-h-0">
+          <ChatInterface
+            messages={currentConversation?.messages || []}
+            isStreaming={isStreaming}
+            onSendMessage={handleSendMessage}
+          />
+        </div>
       </main>
     </div>
   );

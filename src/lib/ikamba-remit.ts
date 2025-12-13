@@ -3,7 +3,7 @@
 // Database structure aligned with blink-1 Firestore schema
 // Supports AI-assisted order creation with full user details
 
-import { db } from './firebase';
+import { db, storage } from './firebase';
 import { 
   collection, 
   doc, 
@@ -20,6 +20,7 @@ import {
   Timestamp,
   collectionGroup
 } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 // ============================================
 // USER PROFILE TYPES (aligned with blink-1)
@@ -35,6 +36,10 @@ export interface UserProfile {
   lastName?: string;
   phoneNumber?: string | null;
   phone?: string;  // Alternative field name
+  photoURL?: string | null;
+  avatarUrl?: string | null;
+  avatarColor?: string;
+  avatarEmoji?: string;
   country?: string;
   countryCode?: string;
   role?: 'user' | 'admin' | 'agent';
@@ -316,6 +321,7 @@ interface TransactionEmailData {
   recipientBankAcc: string;
   rateUsed: string;
   modeOfPayment: string;
+  orderId?: string;
 }
 
 /**
@@ -439,6 +445,92 @@ export async function sendAdminNotificationEmail(transactionData: TransactionEma
   }
 }
 
+/**
+ * Send payment proof received confirmation email to user
+ */
+export async function sendPaymentProofReceivedEmail(
+  senderEmail: string,
+  senderName: string,
+  orderId: string,
+  amount: string,
+  currency: string,
+  recipientName: string,
+  receiveAmount: string,
+  receiveCurrency: string
+): Promise<boolean> {
+  try {
+    if (!senderEmail) {
+      console.error('No email provided for payment proof confirmation');
+      return false;
+    }
+
+    const subject = `Payment Proof Received - Order ${orderId}`;
+    const textMessage = `Hi ${senderName}, we have received your payment proof for order ${orderId}. Your transfer is now being processed.`;
+    const htmlMessage = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: linear-gradient(135deg, #10b981, #059669); padding: 30px; text-align: center; border-radius: 12px 12px 0 0;">
+          <h1 style="color: white; margin: 0;">Payment Received!</h1>
+        </div>
+        
+        <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+          <p style="font-size: 16px; color: #374151;">
+            Hi <strong>${senderName}</strong>,
+          </p>
+          
+          <p style="font-size: 16px; color: #374151;">
+            We have received your payment proof and your transfer is now being processed.
+          </p>
+          
+          <div style="background: white; border-radius: 12px; padding: 20px; margin: 20px 0; border: 1px solid #e5e7eb;">
+            <h3 style="color: #10b981; margin-top: 0;">Order Summary</h3>
+            <table style="width: 100%; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280;">Order Reference:</td>
+                <td style="padding: 8px 0; font-weight: bold; text-align: right;">${orderId}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280;">Amount Sent:</td>
+                <td style="padding: 8px 0; font-weight: bold; text-align: right;">${amount} ${currency}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 0; color: #6b7280;">Recipient:</td>
+                <td style="padding: 8px 0; font-weight: bold; text-align: right;">${recipientName}</td>
+              </tr>
+              <tr style="border-top: 1px solid #e5e7eb;">
+                <td style="padding: 12px 0 8px; color: #6b7280;">Amount to Receive:</td>
+                <td style="padding: 12px 0 8px; font-weight: bold; text-align: right; color: #10b981; font-size: 18px;">${receiveAmount} ${receiveCurrency}</td>
+              </tr>
+            </table>
+          </div>
+          
+          <div style="background: #fef3c7; border-radius: 8px; padding: 15px; margin: 20px 0;">
+            <p style="margin: 0; color: #92400e; font-size: 14px;">
+              <strong>Processing Time:</strong> Mobile Money transfers typically complete within 5-30 minutes. Bank transfers may take 1-3 business days.
+            </p>
+          </div>
+          
+          <p style="font-size: 14px; color: #6b7280;">
+            You will receive another notification once your transfer has been completed.
+          </p>
+        </div>
+        
+        <div style="background: #1f2937; padding: 20px; text-align: center; border-radius: 0 0 12px 12px;">
+          <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+            Ikamba Remit - Fast & Secure Money Transfers
+          </p>
+        </div>
+      </div>
+    `;
+
+    const result = await sendEmail(senderEmail, subject, textMessage, htmlMessage);
+    console.log('Payment proof confirmation email sent to:', senderEmail);
+    return result !== null;
+  } catch (error) {
+    console.error('Failed to send payment proof confirmation email:', error);
+    return false;
+  }
+}
+
 // ============================================
 // USER PROFILE FUNCTIONS
 // ============================================
@@ -473,6 +565,10 @@ export async function getUserProfile(userId: string): Promise<UserProfile | null
       lastName: data.lastName || data.last_name,
       phoneNumber: data.phoneNumber || data.phone_number || data.phone || null,
       phone: data.phone,
+  photoURL: data.photoURL || data.photo_url || data.avatarUrl || data.avatar_url || null,
+  avatarUrl: data.avatarUrl || data.avatar_url || data.photoURL || null,
+  avatarColor: data.avatarColor || data.avatar_color,
+  avatarEmoji: data.avatarEmoji || data.avatar_emoji,
       country: data.country,
       countryCode: data.countryCode || data.country_code,
       role: data.role || 'user',
@@ -1138,7 +1234,8 @@ export async function createTransferOrder(order: CreateOrderInput): Promise<{
     // Create transaction in user's subcollection (blink-1 structure)
     const userTransactionsRef = collection(db, COLLECTIONS.USERS, order.userId, COLLECTIONS.TRANSACTIONS);
     
-    const now = new Date().toISOString();
+    const now = Timestamp.now(); // Use Firestore Timestamp for proper sorting
+    const nowString = new Date().toISOString();
     const transactionData = {
       // User/Sender information
       userId: order.userId,
@@ -1183,9 +1280,9 @@ export async function createTransferOrder(order: CreateOrderInput): Promise<{
       // Status and timestamps - IMPORTANT: use 'Pending' to match blink-1
       status: 'pending_payment' as TransactionStatus,
       transactionstatus: 'Pending', // blink-1 uses this field with capital P
-      date: now,
-      createdAt: now,
-      updatedAt: now,
+      date: now, // Firestore Timestamp for proper sorting in blink-1
+      createdAt: nowString,
+      updatedAt: nowString,
       // AI metadata
       createdByAI: true,
       notes: order.notes || 'Created via Ikamba AI Assistant',
@@ -1319,6 +1416,84 @@ export async function getUserTransfers(userId: string, maxResults = 50): Promise
     return orders;
   } catch (error) {
     console.error('Error fetching user transfers:', error);
+    return [];
+  }
+}
+
+/**
+ * Normalize phone number for deduplication
+ */
+function normalizePhone(phone: string | undefined): string {
+  if (!phone) return '';
+  // Remove all non-digits except leading +
+  let normalized = phone.replace(/[^\d+]/g, '');
+  // Remove leading + for comparison
+  if (normalized.startsWith('+')) {
+    normalized = normalized.substring(1);
+  }
+  // Remove common country codes for deduplication (250 for Rwanda, etc.)
+  if (normalized.startsWith('250') && normalized.length > 9) {
+    normalized = normalized.substring(3);
+  }
+  if (normalized.startsWith('256') && normalized.length > 9) {
+    normalized = normalized.substring(3);
+  }
+  // Remove leading 0 if present
+  if (normalized.startsWith('0')) {
+    normalized = normalized.substring(1);
+  }
+  return normalized;
+}
+
+/**
+ * Get recent recipients for a user based on transaction history
+ * Deduplicates based on normalized name + phone
+ */
+export async function getRecentRecipients(userId: string, limitCount = 5): Promise<any[]> {
+  try {
+    const transfers = await getUserTransfers(userId, 50); // Fetch last 50 to find unique recipients
+    const uniqueRecipients = new Map<string, any>();
+    
+    for (const t of transfers) {
+      if (!t.recipientName) continue;
+      
+      // Normalize name (trim, lowercase for comparison)
+      const normalizedName = t.recipientName.trim().toLowerCase();
+      const normalizedPhone = normalizePhone(t.recipientPhone);
+      
+      // Create a unique key based on normalized name and phone
+      // Use just the last 6 digits of phone for matching (handles country code variations)
+      const phoneKey = normalizedPhone.slice(-6) || 'noPhone';
+      const key = `${normalizedName}-${phoneKey}`;
+      
+      if (!uniqueRecipients.has(key)) {
+        // Format phone nicely for display (prefer version with country code)
+        let displayPhone = t.recipientPhone || '';
+        if (displayPhone && !displayPhone.startsWith('+') && displayPhone.length >= 9) {
+          // Add country code if missing and phone looks complete
+          if (displayPhone.startsWith('07') || displayPhone.startsWith('06')) {
+            displayPhone = '+250' + displayPhone.substring(1); // Rwanda
+          }
+        }
+        
+        uniqueRecipients.set(key, {
+          name: t.recipientName.trim(),
+          phone: displayPhone,
+          accountNumber: t.recipientAccountNumber,
+          bank: t.recipientBank,
+          provider: t.mobileProvider,
+          country: t.recipientCountry || 'Rwanda',
+          lastTransferDate: t.date,
+          deliveryMethod: t.deliveryMethod
+        });
+      }
+      
+      if (uniqueRecipients.size >= limitCount) break;
+    }
+    
+    return Array.from(uniqueRecipients.values());
+  } catch (error) {
+    console.error('Error fetching recent recipients:', error);
     return [];
   }
 }
@@ -1501,6 +1676,355 @@ EXAMPLE CALCULATIONS:
 `;
 
   return context;
+}
+
+// ============================================
+// PAYMENT PROOF UPLOAD (aligned with blink-1)
+// ============================================
+
+/**
+ * Upload payment proof image/PDF to Firebase Storage
+ * and save reference to transaction document
+ * @param userId - User ID
+ * @param transactionId - Transaction ID  
+ * @param file - File to upload (image or PDF)
+ * @param base64Data - Base64 encoded file data (alternative to File)
+ * @returns Object with success status and download URL
+ */
+export async function uploadPaymentProof(
+  userId: string,
+  transactionId: string,
+  file?: File,
+  base64Data?: string
+): Promise<{ success: boolean; url?: string; error?: string }> {
+  try {
+    if (!storage) {
+      return { success: false, error: 'Firebase Storage not initialized' };
+    }
+    
+    if (!userId || !transactionId) {
+      return { success: false, error: 'Missing userId or transactionId' };
+    }
+
+    let fileData: Blob;
+    let fileName: string;
+    let contentType: string;
+
+    if (file) {
+      fileData = file;
+      fileName = file.name;
+      contentType = file.type;
+    } else if (base64Data) {
+      // Handle different data URL formats
+      console.log('[uploadPaymentProof] Processing image data');
+      console.log('[uploadPaymentProof] Data length:', base64Data.length);
+      console.log('[uploadPaymentProof] First 100 chars:', base64Data.substring(0, 100));
+      console.log('[uploadPaymentProof] Starts with data:', base64Data.startsWith('data:'));
+      console.log('[uploadPaymentProof] Starts with blob:', base64Data.startsWith('blob:'));
+      console.log('[uploadPaymentProof] Starts with http:', base64Data.startsWith('http'));
+      
+      // Check if it's a Firebase Storage URL
+      if (base64Data.includes('firebasestorage.googleapis.com')) {
+        console.log('[uploadPaymentProof] Detected Firebase Storage URL');
+        try {
+          const response = await fetch(base64Data, {
+            method: 'GET',
+            headers: {
+              'Accept': 'image/*'
+            }
+          });
+          if (!response.ok) {
+            console.error('[uploadPaymentProof] Firebase fetch failed:', response.status, response.statusText);
+            // For Firebase URLs, if fetch fails, we can just copy the URL
+            // since the image is already in Firebase Storage
+            console.log('[uploadPaymentProof] Using direct URL copy instead');
+            
+            // Just use the existing URL - create a minimal payload
+            const storagePath = `payment-proofs/${userId}/${transactionId}/imported_proof.png`;
+            
+            // Create PaymentProof document pointing to existing image
+            await addDoc(collection(db, 'paymentProofs'), {
+              transactionId,
+              userId,
+              storagePath: base64Data, // Use the original Firebase Storage URL
+              amountPaid: 0,
+              paymentReference: '',
+              status: 'pending',
+              uploadedAt: new Date().toISOString(),
+              notes: 'Uploaded via Ikamba AI (linked from chat)',
+            });
+            
+            // Update transaction document
+            const transactionRef = doc(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS, transactionId);
+            
+            const transactionSnap = await getDoc(transactionRef);
+            if (transactionSnap.exists()) {
+              const currentData = transactionSnap.data();
+              const currentProofs = currentData.paymentProofUrls || [];
+              
+              await updateDoc(transactionRef, {
+                paymentProofUrl: base64Data,
+                paymentProofUrls: [...currentProofs, base64Data],
+                updatedAt: Timestamp.now(),
+                status: 'awaiting_confirmation',
+                transactionstatus: 'Awaiting Confirmation'
+              });
+            } else {
+              // Fallback if transaction not found (shouldn't happen if ID is valid)
+              await updateDoc(transactionRef, {
+                paymentProofUrl: base64Data,
+                paymentProofUrls: [base64Data],
+                updatedAt: Timestamp.now(),
+                status: 'awaiting_confirmation',
+                transactionstatus: 'Awaiting Confirmation'
+              }).catch(e => console.error('Failed to update transaction:', e));
+            }
+            
+            console.log('[uploadPaymentProof] Success using existing URL:', base64Data);
+            return { success: true, url: base64Data };
+          }
+          fileData = await response.blob();
+          contentType = fileData.type || 'image/png';
+          console.log('[uploadPaymentProof] Firebase Storage fetch success, blob size:', fileData.size);
+        } catch (fetchError) {
+          console.error('[uploadPaymentProof] Firebase Storage fetch error:', fetchError);
+          // Still try to use the URL directly
+          console.log('[uploadPaymentProof] Using direct URL as fallback');
+          
+          await addDoc(collection(db, 'paymentProofs'), {
+            transactionId,
+            userId,
+            storagePath: base64Data,
+            amountPaid: 0,
+            paymentReference: '',
+            status: 'pending',
+            uploadedAt: new Date().toISOString(),
+            notes: 'Uploaded via Ikamba AI (linked from chat)',
+          });
+          
+          const transactionRef = doc(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS, transactionId);
+          
+          const transactionSnap = await getDoc(transactionRef);
+          if (transactionSnap.exists()) {
+            const currentData = transactionSnap.data();
+            const currentProofs = currentData.paymentProofUrls || [];
+            
+            await updateDoc(transactionRef, {
+              paymentProofUrl: base64Data,
+              paymentProofUrls: [...currentProofs, base64Data],
+              updatedAt: Timestamp.now(),
+              status: 'awaiting_confirmation',
+              transactionstatus: 'Awaiting Confirmation'
+            });
+          } else {
+            await updateDoc(transactionRef, {
+              paymentProofUrl: base64Data,
+              paymentProofUrls: [base64Data],
+              updatedAt: Timestamp.now(),
+              status: 'awaiting_confirmation',
+              transactionstatus: 'Awaiting Confirmation'
+            }).catch(e => console.error('Failed to update transaction:', e));
+          }
+          
+          return { success: true, url: base64Data };
+        }
+        
+        // Generate filename
+        const ext = contentType.split('/')[1]?.split(';')[0] || 'png';
+        fileName = `proof_${Date.now()}.${ext}`;
+        
+      } else if (base64Data.startsWith('data:')) {
+        // Check if it's a data URL with base64
+        const matches = base64Data.match(/^data:([^;,]+)[^,]*,(.+)$/);
+        if (!matches) {
+          console.error('Failed to parse data URL:', base64Data.substring(0, 100));
+          return { success: false, error: 'Invalid data URL format' };
+        }
+        contentType = matches[1];
+        const dataContent = matches[2];
+        
+        // Check if it's base64 encoded
+        const isBase64 = base64Data.includes(';base64,');
+        
+        if (isBase64) {
+          const byteCharacters = atob(dataContent);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          fileData = new Blob([byteArray], { type: contentType });
+        } else {
+          // URL encoded data
+          const decoded = decodeURIComponent(dataContent);
+          fileData = new Blob([decoded], { type: contentType });
+        }
+      } else if (base64Data.startsWith('blob:')) {
+        // Handle blob URLs - need to fetch the blob
+        try {
+          const response = await fetch(base64Data);
+          fileData = await response.blob();
+          contentType = fileData.type || 'image/png';
+        } catch (fetchError) {
+          console.error('Failed to fetch blob URL:', fetchError);
+          return { success: false, error: 'Could not process image. Please try uploading again.' };
+        }
+      } else if (base64Data.startsWith('http')) {
+        // Handle regular URLs - fetch and convert
+        try {
+          const response = await fetch(base64Data);
+          fileData = await response.blob();
+          contentType = fileData.type || 'image/png';
+        } catch (fetchError) {
+          console.error('Failed to fetch image URL:', fetchError);
+          return { success: false, error: 'Could not download image. Please try uploading again.' };
+        }
+      } else {
+        // Assume it's raw base64 without header
+        try {
+          const byteCharacters = atob(base64Data);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          fileData = new Blob([byteArray], { type: 'image/png' });
+          contentType = 'image/png';
+        } catch (decodeError) {
+          console.error('Failed to decode base64:', decodeError);
+          return { success: false, error: 'Invalid image format' };
+        }
+      }
+      
+      // Generate filename based on content type
+      const ext = contentType.split('/')[1]?.split(';')[0] || 'png';
+      fileName = `proof_${Date.now()}.${ext}`;
+    } else {
+      return { success: false, error: 'No file or base64 data provided' };
+    }
+
+    // Upload to Firebase Storage with path matching blink-1 structure
+    const storagePath = `payment-proofs/${userId}/${transactionId}/${fileName}`;
+    const storageRef = ref(storage, storagePath);
+    
+    await uploadBytes(storageRef, fileData, { contentType });
+    const downloadURL = await getDownloadURL(storageRef);
+
+    // Create PaymentProof document (same collection as blink-1)
+    await addDoc(collection(db, 'paymentProofs'), {
+      transactionId,
+      userId,
+      storagePath: downloadURL,
+      amountPaid: 0, // Will be filled in by AI or admin
+      paymentReference: '',
+      status: 'pending',
+      uploadedAt: new Date().toISOString(),
+      notes: 'Uploaded via Ikamba AI',
+    });
+
+    // Update transaction document with proof URL
+    const transactionRef = doc(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS, transactionId);
+    
+    // Verify transaction exists
+    const transactionSnap = await getDoc(transactionRef);
+    if (transactionSnap.exists()) {
+      const currentData = transactionSnap.data();
+      const currentProofs = currentData.paymentProofUrls || [];
+      
+      await updateDoc(transactionRef, {
+        paymentProofUrl: downloadURL,
+        paymentProofUrls: [...currentProofs, downloadURL],
+        updatedAt: Timestamp.now(),
+        status: 'awaiting_confirmation', // Update status so admin sees it
+        transactionstatus: 'Awaiting Confirmation' // blink-1 legacy field
+      });
+      console.log('Transaction updated with proof and status set to awaiting_confirmation');
+    } else {
+      console.error(`Transaction ${transactionId} not found for user ${userId}`);
+      // We still return success because the proof was uploaded to storage and paymentProofs collection
+    }
+
+    console.log('Payment proof uploaded:', downloadURL);
+    return { success: true, url: downloadURL };
+  } catch (error) {
+    console.error('Error uploading payment proof:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Failed to upload proof' 
+    };
+  }
+}
+
+/**
+ * Get the most recent transaction for a user (for attaching payment proof)
+ * Can optionally match by recipient name for accuracy
+ */
+export async function getLatestUserTransaction(
+  userId: string, 
+  matchRecipient?: string
+): Promise<{ id: string; data: any } | null> {
+  try {
+    const transactionsRef = collection(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS);
+    
+    // Fetch more transactions to find the right one
+    const q = query(transactionsRef, orderBy('date', 'desc'), limit(10));
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) {
+      console.log('[getLatestUserTransaction] No transactions found');
+      return null;
+    }
+    
+    // If we have a recipient name to match, find the most recent matching one
+    if (matchRecipient) {
+      const normalizedMatch = matchRecipient.toLowerCase().trim();
+      for (const docSnap of snapshot.docs) {
+        const data = docSnap.data();
+        const recipientName = (data.recipientName || data.recipientsfname || '').toLowerCase().trim();
+        if (recipientName === normalizedMatch) {
+          console.log('[getLatestUserTransaction] Found matching recipient:', matchRecipient, '-> txn:', docSnap.id);
+          return { id: docSnap.id, data };
+        }
+      }
+      console.log('[getLatestUserTransaction] No match for recipient:', matchRecipient);
+    }
+    
+    // Find the most recent by comparing actual timestamps
+    let latestDoc = snapshot.docs[0];
+    let latestTime = 0;
+    
+    for (const docSnap of snapshot.docs) {
+      const data = docSnap.data();
+      let docTime = 0;
+      
+      // Handle different date formats
+      if (data.date?.toDate) {
+        docTime = data.date.toDate().getTime();
+      } else if (data.date?.seconds) {
+        docTime = data.date.seconds * 1000;
+      } else if (typeof data.date === 'string') {
+        docTime = new Date(data.date).getTime();
+      } else if (data.createdAt) {
+        const createdTime = typeof data.createdAt === 'string' 
+          ? new Date(data.createdAt).getTime()
+          : data.createdAt?.toDate?.()?.getTime() || data.createdAt?.seconds * 1000 || 0;
+        docTime = createdTime;
+      }
+      
+      if (docTime > latestTime) {
+        latestTime = docTime;
+        latestDoc = docSnap;
+      }
+    }
+    
+    console.log('[getLatestUserTransaction] Found transaction:', latestDoc.id);
+    console.log('[getLatestUserTransaction] Recipient:', latestDoc.data().recipientName || latestDoc.data().recipientsfname);
+    
+    return { id: latestDoc.id, data: latestDoc.data() };
+  } catch (error) {
+    console.error('Error getting latest transaction:', error);
+    return null;
+  }
 }
 
 // Export FEE_CONFIG for external use

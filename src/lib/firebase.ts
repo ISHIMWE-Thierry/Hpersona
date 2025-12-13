@@ -1,6 +1,7 @@
 import { initializeApp, FirebaseApp } from 'firebase/app';
 import { getAuth, Auth } from 'firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
+import { getStorage, FirebaseStorage } from 'firebase/storage';
 
 // Firebase configuration interface
 interface FirebaseConfig {
@@ -26,12 +27,14 @@ const firebaseConfig: FirebaseConfig = {
 let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
 let db: Firestore | null = null;
+let storage: FirebaseStorage | null = null;
 let isFirebaseConfigured = false;
 
 try {
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   db = getFirestore(app);
+  storage = getStorage(app);
   isFirebaseConfigured = true;
   console.log('✓ Firebase initialized successfully');
 } catch (error) {
@@ -39,4 +42,4 @@ try {
   isFirebaseConfigured = false;
 }
 
-export { app, auth, db, isFirebaseConfigured };
+export { app, auth, db, storage, isFirebaseConfigured };

@@ -82,10 +82,17 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
     setUploadedImages(prev => prev.filter((_, i) => i !== index));
   };
 
+  // Handle recipient selection from RecentRecipientsBox
+  const handleSelectRecipient = (recipient: any, index: number) => {
+    // Send a message to the AI with the selected recipient
+    const message = `Send to recipient ${index}: ${recipient.name}`;
+    onSendMessage(message, [], mode);
+  };
+
   // Empty state - centered welcome
   if (messages.length === 0) {
     return (
-      <div className="flex flex-col h-screen items-center justify-center px-4">
+      <div className="flex flex-col h-full min-h-[480px] items-center justify-center px-4">
         <div className="w-full max-w-2xl mx-auto">
           <div className="text-center mb-8">
             <h1 className="text-3xl font-bold mb-2">Ikamba AI</h1>
@@ -176,7 +183,7 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
 
   // Chat state with messages
   return (
-    <div className="flex flex-col h-screen">
+    <div className="relative flex flex-col h-full min-h-[520px]">
       <ScrollArea className="flex-1 px-4 lg:px-8" ref={scrollRef}>
         <div className="max-w-3xl mx-auto py-6 space-y-4 pb-32">
           {messages.map((message, index) => (
@@ -184,7 +191,8 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
               key={message.id || index} 
               message={message} 
               className="animate-fade-in-up" 
-              style={{ animationDelay: index * 30 + 'ms' }} 
+              style={{ animationDelay: index * 30 + 'ms' }}
+              onSelectRecipient={handleSelectRecipient}
             />
           ))}
           {isStreaming && (

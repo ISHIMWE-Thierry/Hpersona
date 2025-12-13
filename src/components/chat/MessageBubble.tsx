@@ -5,15 +5,102 @@ import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
+import { PaymentDetailsBox, extractPaymentFromContent } from './PaymentDetailsBox';
+import { TransferSummaryBox, extractTransferFromContent } from './TransferSummaryBox';
+import { OrderSuccessBox, extractSuccessFromContent } from './OrderSuccessBox';
+import { RecentRecipientsBox, extractRecipientsFromContent } from './RecentRecipientsBox';
+import { CopyableValue } from './CopyableValue';
 
 interface MessageBubbleProps {
   message: Message;
   className?: string;
   style?: React.CSSProperties;
+  onSelectRecipient?: (recipient: any, index: number) => void;
 }
 
-export function MessageBubble({ message, className, style }: MessageBubbleProps) {
+// Process content to render copyable tags as React components
+function renderContentWithCopyables(content: string): React.ReactNode {
+  // First, check if there are any [[COPY:...]] tags
+  if (!content.includes('[[COPY:')) {
+    return content;
+  }
+
+  const parts: React.ReactNode[] = [];
+  const lines = content.split('\n');
+  
+  lines.forEach((line, lineIndex) => {
+    const regex = /\[\[COPY:([^:]+):([^\]]+)\]\]/g;
+    let lastIndex = 0;
+    let match;
+    const lineParts: React.ReactNode[] = [];
+    let partKey = 0;
+
+    while ((match = regex.exec(line)) !== null) {
+      // Add text before the match
+      if (match.index > lastIndex) {
+        lineParts.push(line.slice(lastIndex, match.index));
+      }
+      
+      // Add the copyable component
+      const label = match[1];
+      const value = match[2];
+      lineParts.push(
+        <CopyableValue key={`${lineIndex}-${partKey++}`} label={label} value={value} />
+      );
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text on this line
+    if (lastIndex < line.length) {
+      lineParts.push(line.slice(lastIndex));
+    }
+    
+    // If line had copyable parts, render them; otherwise just the line
+    if (lineParts.length > 0) {
+      parts.push(
+        <div key={lineIndex} className="flex flex-wrap items-center gap-1 my-1">
+          {lineParts}
+        </div>
+      );
+    } else {
+      parts.push(<div key={lineIndex}>{line || '\u00A0'}</div>);
+    }
+  });
+
+  return <>{parts}</>;
+}
+
+export function MessageBubble({ message, className, style, onSelectRecipient }: MessageBubbleProps) {
   const isUser = message.role === 'user';
+  
+  // Extract transfer summary from assistant messages
+  const { cleanContent: contentAfterTransfer, transferSummary } = !isUser 
+    ? extractTransferFromContent(message.content)
+    : { cleanContent: message.content, transferSummary: null };
+  
+  // Extract payment details from assistant messages
+  const { cleanContent: contentAfterPayment, paymentDetails } = !isUser 
+    ? extractPaymentFromContent(contentAfterTransfer)
+    : { cleanContent: contentAfterTransfer, paymentDetails: null };
+  
+  // Extract success details from assistant messages
+  const { cleanContent: contentAfterSuccess, successDetails } = !isUser 
+    ? extractSuccessFromContent(contentAfterPayment)
+    : { cleanContent: contentAfterPayment, successDetails: null };
+  
+  // Extract recent recipients from assistant messages
+  const { cleanContent, recipients } = !isUser 
+    ? extractRecipientsFromContent(contentAfterSuccess)
+    : { cleanContent: contentAfterSuccess, recipients: null };
+  
+  // Check if content has copyable tags
+  const hasCopyableTags = cleanContent.includes('[[COPY:');
+  
+  // Clean the content for display (remove COPY tags if we're rendering them separately)
+  const displayContent = hasCopyableTags 
+    ? cleanContent.replace(/\[\[COPY:[^\]]+\]\]/g, '') // Will be rendered by renderContentWithCopyables
+    : cleanContent;
 
   return (
     <div
@@ -66,34 +153,89 @@ export function MessageBubble({ message, className, style }: MessageBubbleProps)
             {message.content}
           </p>
         ) : (
-          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:bg-background/50 prose-pre:border prose-pre:border-border prose-code:text-primary prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none">
-            <ReactMarkdown
-              remarkPlugins={[remarkMath]}
-              rehypePlugins={[rehypeKatex]}
-              components={{
-                // Custom rendering for code blocks
-                code({ node, inline, className, children, ...props }: any) {
-                  return inline ? (
-                    <code className={className} {...props}>
-                      {children}
-                    </code>
-                  ) : (
-                    <pre className="overflow-x-auto p-3 rounded-lg">
-                      <code className={className} {...props}>
-                        {children}
-                      </code>
-                    </pre>
-                  );
-                },
-                // Better paragraph handling
-                p({ children }) {
-                  return <p className="mb-2 last:mb-0">{children}</p>;
-                },
-              }}
-            >
-              {message.content}
-            </ReactMarkdown>
-          </div>
+          <>
+            {/* If content has copyable tags, render with special handling */}
+            {hasCopyableTags ? (
+              <div className="text-sm leading-relaxed space-y-1">
+                {renderContentWithCopyables(cleanContent)}
+              </div>
+            ) : (
+              <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:bg-background/50 prose-pre:border prose-pre:border-border prose-code:text-primary prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none">
+                <ReactMarkdown
+                  remarkPlugins={[remarkMath]}
+                  rehypePlugins={[rehypeKatex]}
+                  components={{
+                    // Custom rendering for code blocks
+                    code({ node, inline, className, children, ...props }: any) {
+                      return inline ? (
+                        <code className={className} {...props}>
+                          {children}
+                        </code>
+                      ) : (
+                        <pre className="overflow-x-auto p-3 rounded-lg">
+                          <code className={className} {...props}>
+                            {children}
+                          </code>
+                        </pre>
+                      );
+                    },
+                    // Better paragraph handling
+                    p({ children }) {
+                      return <p className="mb-2 last:mb-0">{children}</p>;
+                    },
+                  }}
+                >
+                  {cleanContent}
+                </ReactMarkdown>
+              </div>
+            )}
+            
+            {/* Transfer Summary Box */}
+            {transferSummary && (
+              <TransferSummaryBox
+                sendAmount={transferSummary.sendAmount}
+                sendCurrency={transferSummary.sendCurrency}
+                fee={transferSummary.fee}
+                netAmount={transferSummary.netAmount}
+                rate={transferSummary.rate}
+                receiveAmount={transferSummary.receiveAmount}
+                receiveCurrency={transferSummary.receiveCurrency}
+              />
+            )}
+            
+            {/* Payment Details Box with copy buttons */}
+            {paymentDetails && (
+              <PaymentDetailsBox
+                amount={paymentDetails.amount}
+                currency={paymentDetails.currency}
+                accountNumber={paymentDetails.accountNumber}
+                accountHolder={paymentDetails.accountHolder}
+                provider={paymentDetails.provider}
+              />
+            )}
+            
+            {/* Order Success Box */}
+            {successDetails && (
+              <OrderSuccessBox
+                orderId={successDetails.orderId}
+                senderName={successDetails.senderName}
+                senderEmail={successDetails.senderEmail}
+                recipientName={successDetails.recipientName}
+                amount={successDetails.amount}
+                currency={successDetails.currency}
+                receiveAmount={successDetails.receiveAmount}
+                receiveCurrency={successDetails.receiveCurrency}
+              />
+            )}
+            
+            {/* Recent Recipients Box */}
+            {recipients && recipients.length > 0 && (
+              <RecentRecipientsBox
+                recipients={recipients}
+                onSelect={onSelectRecipient}
+              />
+            )}
+          </>
         )}
         {message.timestamp && (
           <span className={cn(
