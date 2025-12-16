@@ -374,12 +374,12 @@ async function buildIkambaContext(userId?: string) {
   if (context.recentRecipients && context.recentRecipients.length > 0) {
     // Human-readable list for context
     const list = context.recentRecipients.map((r, i) => 
-      `${i+1}. ${r.name} (${r.phone || 'no phone'}) - ${r.bank || r.provider || 'Mobile Money'} - ${r.country || ''}`
+      `${i+1}. ${r.name} (${r.phone || 'no phone'}) - ${r.bank || r.provider || 'Mobile Money'} - ${r.country || r.currency || ''}`
     ).join('\n');
     
     // Pre-built tag data for AI to use (pipe-separated: name|phone|provider|bank|country)
     recipientsTagData = context.recentRecipients.map(r => 
-      `${r.name}|${r.phone || ''}|${r.provider || ''}|${r.bank || ''}|${r.country || ''}`
+      `${r.name}|${r.phone || ''}|${r.provider || ''}|${r.bank || ''}|${r.country || r.currency || ''}`
     ).join(',');
     
     recentRecipientsText = `

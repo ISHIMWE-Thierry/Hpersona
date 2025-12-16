@@ -1390,21 +1390,24 @@ export async function getUserTransfers(userId: string, maxResults = 50): Promise
         transactionId: data.transactionId || docSnap.id,
         userId: data.userId || userId,
         recipientId: data.recipientId,
-        recipientName: data.recipientName || data.recipient_name,
-        recipientPhone: data.recipientPhone || data.recipient_phone,
-        recipientCountry: data.recipientCountry || data.recipient_country,
-        fromCurrency: data.fromCurrency || data.from_currency,
-        toCurrency: data.toCurrency || data.to_currency,
-        sendAmount: data.sendAmount || data.send_amount || data.amount,
+        recipientName: data.recipientName || data.recipientsfname || data.recipient_name,
+        recipientPhone: data.recipientPhone || data.recipientsphone || data.recipient_phone,
+        recipientCountry: data.recipientCountry || data.recipient_country || data.transferCurrency,
+        recipientBank: data.recipientBank || data.bank || data.bankName,
+        recipientAccountNumber: data.recipientAccountNumber || data.recipientBankAccount || data.accountNumber,
+        mobileProvider: data.mobileProvider || data.transfermethod || data.provider,
+        fromCurrency: data.fromCurrency || data.baseCurrency || data.from_currency,
+        toCurrency: data.toCurrency || data.transferCurrency || data.to_currency,
+        sendAmount: data.sendAmount || data.amountToPay || data.send_amount || data.amount,
         receiveAmount: data.receiveAmount || data.receive_amount,
-        exchangeRate: data.exchangeRate || data.exchange_rate || data.rate,
+        exchangeRate: data.exchangeRate || data.rate || data.exchange_rate,
         fee: data.fee || 0,
         payoutFee: data.payoutFee || 0,
         totalAmount: data.totalAmount || data.total_amount || 0,
         paymentMethod: data.paymentMethod || data.payment_method || 'card',
         deliveryMethod: data.deliveryMethod || data.delivery_method || 'mobile_money',
-        status: data.status || 'pending_payment',
-        date: data.date ? new Date(data.date) : new Date(),
+        status: data.status || data.transactionstatus?.toLowerCase() || 'pending_payment',
+        date: data.date ? new Date(data.date) : (data.createdAt ? new Date(data.createdAt) : new Date()),
         createdAt: data.createdAt ? new Date(data.createdAt) : undefined,
         updatedAt: data.updatedAt ? new Date(data.updatedAt) : undefined,
         createdByAI: data.createdByAI || false,
@@ -1454,6 +1457,20 @@ export async function getRecentRecipients(userId: string, limitCount = 5): Promi
     const transfers = await getUserTransfers(userId, 50); // Fetch last 50 to find unique recipients
     const uniqueRecipients = new Map<string, any>();
     
+    // Map currency to country
+    const currencyToCountry: Record<string, string> = {
+      'RWF': 'Rwanda',
+      'UGX': 'Uganda',
+      'KES': 'Kenya',
+      'TZS': 'Tanzania',
+      'BIF': 'Burundi',
+      'NGN': 'Nigeria',
+      'ETB': 'Ethiopia',
+      'XOF': 'West Africa',
+      'ZAR': 'South Africa',
+      'SLE': 'Sierra Leone',
+    };
+    
     for (const t of transfers) {
       if (!t.recipientName) continue;
       
@@ -1473,7 +1490,16 @@ export async function getRecentRecipients(userId: string, limitCount = 5): Promi
           // Add country code if missing and phone looks complete
           if (displayPhone.startsWith('07') || displayPhone.startsWith('06')) {
             displayPhone = '+250' + displayPhone.substring(1); // Rwanda
+          } else if (displayPhone.startsWith('07') && displayPhone.length === 10) {
+            // Could be Uganda
+            displayPhone = '+256' + displayPhone.substring(1);
           }
+        }
+        
+        // Derive country from currency if not set
+        let country = t.recipientCountry;
+        if (!country || country === t.toCurrency) {
+          country = currencyToCountry[t.toCurrency] || 'Unknown';
         }
         
         uniqueRecipients.set(key, {
@@ -1482,7 +1508,8 @@ export async function getRecentRecipients(userId: string, limitCount = 5): Promi
           accountNumber: t.recipientAccountNumber,
           bank: t.recipientBank,
           provider: t.mobileProvider,
-          country: t.recipientCountry || 'Rwanda',
+          country: country,
+          currency: t.toCurrency,
           lastTransferDate: t.date,
           deliveryMethod: t.deliveryMethod
         });
