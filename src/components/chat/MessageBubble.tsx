@@ -9,6 +9,7 @@ import { PaymentDetailsBox, extractPaymentFromContent } from './PaymentDetailsBo
 import { TransferSummaryBox, extractTransferFromContent } from './TransferSummaryBox';
 import { OrderSuccessBox, extractSuccessFromContent } from './OrderSuccessBox';
 import { RecentRecipientsBox, extractRecipientsFromContent } from './RecentRecipientsBox';
+import { OrderFlowBox, extractOrderFlowFromContent } from './OrderFlowBox';
 import { CopyableValue } from './CopyableValue';
 
 interface MessageBubbleProps {
@@ -16,6 +17,7 @@ interface MessageBubbleProps {
   className?: string;
   style?: React.CSSProperties;
   onSelectRecipient?: (recipient: any, index: number) => void;
+  onSubmitOrder?: (orderData: any) => void;
 }
 
 // Process content to render copyable tags as React components
@@ -71,13 +73,18 @@ function renderContentWithCopyables(content: string): React.ReactNode {
   return <>{parts}</>;
 }
 
-export function MessageBubble({ message, className, style, onSelectRecipient }: MessageBubbleProps) {
+export function MessageBubble({ message, className, style, onSelectRecipient, onSubmitOrder }: MessageBubbleProps) {
   const isUser = message.role === 'user';
+  
+  // Extract order flow from assistant messages
+  const { cleanContent: contentAfterOrder, orderData } = !isUser 
+    ? extractOrderFlowFromContent(message.content)
+    : { cleanContent: message.content, orderData: null };
   
   // Extract transfer summary from assistant messages
   const { cleanContent: contentAfterTransfer, transferSummary } = !isUser 
-    ? extractTransferFromContent(message.content)
-    : { cleanContent: message.content, transferSummary: null };
+    ? extractTransferFromContent(contentAfterOrder)
+    : { cleanContent: contentAfterOrder, transferSummary: null };
   
   // Extract payment details from assistant messages
   const { cleanContent: contentAfterPayment, paymentDetails } = !isUser 
@@ -105,21 +112,21 @@ export function MessageBubble({ message, className, style, onSelectRecipient }: 
   return (
     <div
       className={cn(
-        "flex gap-4 group",
+        "flex gap-2 sm:gap-4 group",
         isUser && "justify-end",
         className
       )}
       style={style}
     >
       {!isUser && (
-        <div className="flex-shrink-0 h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center">
-          <Bot className="h-5 w-5 text-primary" />
+        <div className="flex-shrink-0 h-6 w-6 sm:h-8 sm:w-8 rounded-full bg-primary/20 flex items-center justify-center">
+          <Bot className="h-3.5 w-3.5 sm:h-5 sm:w-5 text-primary" />
         </div>
       )}
       
       <div
         className={cn(
-          "max-w-[80%] rounded-2xl px-4 py-3 transition-all",
+          "max-w-[85%] sm:max-w-[80%] rounded-xl sm:rounded-2xl px-3 py-2 sm:px-4 sm:py-3 transition-all",
           isUser
             ? "bg-primary text-primary-foreground"
             : "bg-muted/50 glass border border-border"
@@ -127,13 +134,13 @@ export function MessageBubble({ message, className, style, onSelectRecipient }: 
       >
         {/* Display images if present */}
         {message.images && message.images.length > 0 && (
-          <div className="flex flex-wrap gap-2 mb-3">
+          <div className="flex flex-wrap gap-1.5 sm:gap-2 mb-2 sm:mb-3">
             {message.images.map((imageUrl, index) => (
               <img
                 key={index}
                 src={imageUrl}
                 alt={`Attachment ${index + 1}`}
-                className="max-w-full max-h-64 rounded-lg object-cover border border-border/50"
+                className="max-w-full max-h-48 sm:max-h-64 rounded-lg object-cover border border-border/50"
               />
             ))}
           </div>
@@ -141,26 +148,26 @@ export function MessageBubble({ message, className, style, onSelectRecipient }: 
 
         {/* Display reasoning if present (for O1 models) */}
         {message.reasoning && (
-          <div className="mb-3 p-3 rounded-lg bg-background/50 border border-border/50">
-            <p className="text-xs font-medium text-muted-foreground mb-1">🧠 Reasoning Process:</p>
-            <p className="text-xs text-muted-foreground/80 whitespace-pre-wrap">{message.reasoning}</p>
+          <div className="mb-2 sm:mb-3 p-2 sm:p-3 rounded-lg bg-background/50 border border-border/50">
+            <p className="text-[10px] sm:text-xs font-medium text-muted-foreground mb-1">🧠 Reasoning Process:</p>
+            <p className="text-[10px] sm:text-xs text-muted-foreground/80 whitespace-pre-wrap">{message.reasoning}</p>
           </div>
         )}
 
         {/* Render content with markdown and math support */}
         {isUser ? (
-          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+          <p className="whitespace-pre-wrap break-words text-xs sm:text-sm leading-relaxed">
             {message.content}
           </p>
         ) : (
           <>
             {/* If content has copyable tags, render with special handling */}
             {hasCopyableTags ? (
-              <div className="text-sm leading-relaxed space-y-1">
+              <div className="text-xs sm:text-sm leading-relaxed space-y-1">
                 {renderContentWithCopyables(cleanContent)}
               </div>
             ) : (
-              <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:bg-background/50 prose-pre:border prose-pre:border-border prose-code:text-primary prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none">
+              <div className="prose prose-xs sm:prose-sm dark:prose-invert max-w-none prose-p:my-0.5 sm:prose-p:my-1 prose-headings:my-1 sm:prose-headings:my-2 prose-ul:my-0.5 sm:prose-ul:my-1 prose-ol:my-0.5 sm:prose-ol:my-1 prose-li:my-0 sm:prose-li:my-0.5 prose-pre:bg-background/50 prose-pre:border prose-pre:border-border prose-code:text-primary prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none text-xs sm:text-sm">
                 <ReactMarkdown
                   remarkPlugins={[remarkMath]}
                   rehypePlugins={[rehypeKatex]}
@@ -172,7 +179,7 @@ export function MessageBubble({ message, className, style, onSelectRecipient }: 
                           {children}
                         </code>
                       ) : (
-                        <pre className="overflow-x-auto p-3 rounded-lg">
+                        <pre className="overflow-x-auto p-2 sm:p-3 rounded-lg text-[10px] sm:text-xs">
                           <code className={className} {...props}>
                             {children}
                           </code>
@@ -200,6 +207,19 @@ export function MessageBubble({ message, className, style, onSelectRecipient }: 
                 rate={transferSummary.rate}
                 receiveAmount={transferSummary.receiveAmount}
                 receiveCurrency={transferSummary.receiveCurrency}
+              />
+            )}
+            
+            {/* Order Flow Box */}
+            {orderData && onSubmitOrder && (
+              <OrderFlowBox
+                sendAmount={orderData.sendAmount}
+                sendCurrency={orderData.sendCurrency}
+                receiveAmount={orderData.receiveAmount}
+                receiveCurrency={orderData.receiveCurrency}
+                rate={orderData.rate}
+                fee={orderData.fee}
+                onSubmitOrder={onSubmitOrder}
               />
             )}
             
@@ -239,7 +259,7 @@ export function MessageBubble({ message, className, style, onSelectRecipient }: 
         )}
         {message.timestamp && (
           <span className={cn(
-            "text-xs mt-1 block",
+            "text-[10px] sm:text-xs mt-0.5 sm:mt-1 block",
             isUser ? "text-primary-foreground/70" : "text-muted-foreground"
           )}>
             {new Date(message.timestamp).toLocaleTimeString([], { 
@@ -251,8 +271,8 @@ export function MessageBubble({ message, className, style, onSelectRecipient }: 
       </div>
 
       {isUser && (
-        <div className="flex-shrink-0 h-8 w-8 rounded-full bg-secondary/20 flex items-center justify-center">
-          <User className="h-5 w-5 text-secondary" />
+        <div className="flex-shrink-0 h-6 w-6 sm:h-8 sm:w-8 rounded-full bg-secondary/20 flex items-center justify-center">
+          <User className="h-3.5 w-3.5 sm:h-5 sm:w-5 text-secondary" />
         </div>
       )}
     </div>

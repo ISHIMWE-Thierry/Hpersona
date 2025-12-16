@@ -812,7 +812,7 @@ Transfer is being processed. You will receive confirmation shortly.`;
 
     // First call - check if AI wants to use tools
     const initialResponse = await openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: 'gpt-4.1',
       messages: messagesWithSystem,
       tools: tools,
       tool_choice: 'auto',
@@ -850,7 +850,7 @@ Transfer is being processed. You will receive confirmation shortly.`;
       
       // Get final response after function execution
       const finalResponse = await openai.chat.completions.create({
-        model: 'gpt-4o',
+        model: 'gpt-4.1',
         messages: messagesWithSystem,
         temperature: 0, // Use 0 for strict format compliance
         stream: true,
@@ -904,7 +904,7 @@ Transfer is being processed. You will receive confirmation shortly.`;
     // No function call - stream the initial response
     // We need to make a streaming call since initial was non-streaming
     const streamingResponse = await openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: 'gpt-4.1',
       messages: messagesWithSystem,
       temperature: 0, // Use 0 for strict format compliance
       stream: true,

@@ -1,7 +1,9 @@
 {
-  "name": "user",
+  "name": "ikamba-ai",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Ikamba AI - Send money to Africa instantly with AI assistance",
+  "author": "Ikamba",
   "type": "module",
   "scripts": {
     "dev": "next dev",

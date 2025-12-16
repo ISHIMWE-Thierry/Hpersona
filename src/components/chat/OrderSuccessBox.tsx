@@ -1,7 +1,8 @@
 'use client';
 
-import { CheckCircle, Mail, Clock, ArrowRight } from 'lucide-react';
+import { CheckCircle, Mail, Clock, ArrowRight, Copy, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useState } from 'react';
 
 interface OrderSuccessBoxProps {
   orderId: string;
@@ -27,6 +28,35 @@ function formatAmount(value: string | undefined): string {
   return num.toLocaleString();
 }
 
+// Copy button component
+function CopyRefButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="ml-2 p-1 rounded hover:bg-green-200/50 dark:hover:bg-green-800/50 transition-colors"
+      title="Copy reference"
+    >
+      {copied ? (
+        <Check className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+      ) : (
+        <Copy className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+      )}
+    </button>
+  );
+}
+
 export function OrderSuccessBox({
   orderId,
   senderName,
@@ -44,39 +74,42 @@ export function OrderSuccessBox({
   
   return (
     <div className={cn(
-      "rounded-xl border border-green-200 dark:border-green-900 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950/30 dark:to-emerald-950/30 overflow-hidden my-3",
+      "rounded-xl border border-green-200 dark:border-green-900 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950/30 dark:to-emerald-950/30 overflow-hidden my-2 sm:my-3 shadow-sm",
       className
     )}>
-      {/* Success Header */}
-      <div className="flex items-center gap-3 px-4 py-4 bg-green-100 dark:bg-green-900/50 border-b border-green-200 dark:border-green-800">
-        <div className="h-10 w-10 rounded-full bg-green-500 flex items-center justify-center">
-          <CheckCircle className="h-6 w-6 text-white" />
+      {/* Success Header - Compact on mobile */}
+      <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-3 sm:py-4 bg-green-100 dark:bg-green-900/50 border-b border-green-200 dark:border-green-800">
+        <div className="h-8 w-8 sm:h-10 sm:w-10 rounded-full bg-green-500 flex items-center justify-center flex-shrink-0">
+          <CheckCircle className="h-4 w-4 sm:h-6 sm:w-6 text-white" />
         </div>
-        <div>
-          <h3 className="font-semibold text-green-800 dark:text-green-200">Payment Proof Received!</h3>
-          <p className="text-sm text-green-600 dark:text-green-400">Your transfer is being processed</p>
+        <div className="min-w-0">
+          <h3 className="font-semibold text-sm sm:text-base text-green-800 dark:text-green-200">Payment Proof Received!</h3>
+          <p className="text-xs sm:text-sm text-green-600 dark:text-green-400">Your transfer is being processed</p>
         </div>
       </div>
 
       {/* Order Details */}
-      <div className="p-4 space-y-3">
-        {/* Reference */}
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Order Reference</span>
-          <span className="font-mono font-semibold text-green-700 dark:text-green-300">{orderId}</span>
+      <div className="p-3 sm:p-4 space-y-2 sm:space-y-3">
+        {/* Reference - Highlighted */}
+        <div className="flex items-center justify-between p-2 rounded-lg bg-white/50 dark:bg-black/20">
+          <span className="text-xs sm:text-sm text-muted-foreground">Reference</span>
+          <div className="flex items-center">
+            <span className="font-mono text-xs sm:text-sm font-semibold text-green-700 dark:text-green-300">{orderId}</span>
+            <CopyRefButton value={orderId} />
+          </div>
         </div>
 
-        {/* Transfer Summary */}
+        {/* Transfer Summary - Compact on mobile */}
         {hasValidAmounts && (
-          <div className="flex items-center justify-center gap-3 py-3 bg-white/50 dark:bg-black/20 rounded-lg">
-            <div className="text-center">
-              <p className="text-lg font-bold">{formattedSendAmount}</p>
-              <p className="text-xs text-muted-foreground">{currency || 'RUB'}</p>
+          <div className="flex items-center justify-center gap-2 sm:gap-3 py-2 sm:py-3 bg-white/50 dark:bg-black/20 rounded-lg">
+            <div className="text-center min-w-0">
+              <p className="text-base sm:text-lg font-bold truncate">{formattedSendAmount}</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">{currency || 'RUB'}</p>
             </div>
-            <ArrowRight className="h-5 w-5 text-green-500" />
-            <div className="text-center">
-              <p className="text-lg font-bold text-green-600 dark:text-green-400">{formattedReceiveAmount}</p>
-              <p className="text-xs text-muted-foreground">{receiveCurrency || 'RWF'}</p>
+            <ArrowRight className="h-4 w-4 sm:h-5 sm:w-5 text-green-500 flex-shrink-0" />
+            <div className="text-center min-w-0">
+              <p className="text-base sm:text-lg font-bold text-green-600 dark:text-green-400 truncate">{formattedReceiveAmount}</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">{receiveCurrency || 'RWF'}</p>
             </div>
           </div>
         )}
@@ -84,30 +117,30 @@ export function OrderSuccessBox({
         {/* Recipient */}
         {recipientName && (
           <div className="flex items-center justify-between">
-            <span className="text-sm text-muted-foreground">Recipient</span>
-            <span className="font-medium">{recipientName}</span>
+            <span className="text-xs sm:text-sm text-muted-foreground">Recipient</span>
+            <span className="font-medium text-xs sm:text-sm truncate max-w-[150px] sm:max-w-none">{recipientName}</span>
           </div>
         )}
 
         {/* Email Notification */}
         {senderEmail && (
-          <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400 bg-green-100/50 dark:bg-green-900/30 rounded-lg px-3 py-2">
-            <Mail className="h-4 w-4" />
-            <span>Confirmation email sent to {senderEmail}</span>
+          <div className="flex items-center gap-2 text-xs sm:text-sm text-green-600 dark:text-green-400 bg-green-100/50 dark:bg-green-900/30 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2">
+            <Mail className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0" />
+            <span className="truncate">Confirmation sent to {senderEmail}</span>
           </div>
         )}
 
         {/* Processing Time */}
-        <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400 bg-amber-100/50 dark:bg-amber-900/30 rounded-lg px-3 py-2">
-          <Clock className="h-4 w-4" />
-          <span>Processing time: 5-30 minutes for Mobile Money</span>
+        <div className="flex items-center gap-2 text-xs sm:text-sm text-amber-600 dark:text-amber-400 bg-amber-100/50 dark:bg-amber-900/30 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2">
+          <Clock className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0" />
+          <span>Processing: 5-30 mins for Mobile Money</span>
         </div>
       </div>
 
       {/* Footer */}
-      <div className="px-4 py-3 bg-green-100/50 dark:bg-green-900/30 border-t border-green-200 dark:border-green-800">
-        <p className="text-xs text-center text-green-700 dark:text-green-300">
-          You will receive another notification once your transfer is complete.
+      <div className="px-3 sm:px-4 py-2 sm:py-3 bg-green-100/50 dark:bg-green-900/30 border-t border-green-200 dark:border-green-800">
+        <p className="text-[10px] sm:text-xs text-center text-green-700 dark:text-green-300">
+          You'll be notified when your transfer is complete
         </p>
       </div>
     </div>

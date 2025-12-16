@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, X, Brain, Zap, Plus } from 'lucide-react';
+import { Send, Loader2, X, Brain, Zap, Plus, DollarSign } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Message } from '@/types/chat';
@@ -16,6 +16,14 @@ interface ChatInterfaceProps {
   isStreaming: boolean;
   onSendMessage: (content: string, images?: string[], mode?: ChatMode) => void;
 }
+
+// Quick action suggestions for money transfer
+const QUICK_ACTIONS = [
+  { label: 'Send money to Rwanda', action: 'I want to send money to Rwanda' },
+  { label: 'Send to Kenya', action: 'I want to send money to Kenya' },
+  { label: 'Check rates', action: 'What are the current exchange rates?' },
+  { label: 'Track transfer', action: 'Track my recent transfer' },
+];
 
 export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInterfaceProps) {
   const [input, setInput] = useState('');
@@ -89,25 +97,65 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
     onSendMessage(message, [], mode);
   };
 
+  // Handle order submission from OrderFlowBox
+  const handleSubmitOrder = (orderData: any) => {
+    // Construct a confirmation message with all order details
+    const message = `CONFIRM ORDER:
+- Amount: ${orderData.sendAmount} ${orderData.sendCurrency}
+- Recipient: ${orderData.recipientName}
+- Delivery: ${orderData.deliveryMethod === 'mobile_money' ? 'Mobile Money' : 'Bank Transfer'}
+${orderData.deliveryMethod === 'mobile_money' 
+  ? `- Provider: ${orderData.mobileProvider}\n- Phone: ${orderData.recipientPhone}` 
+  : `- Bank: ${orderData.recipientBank}\n- Account: ${orderData.recipientAccountNumber}`}
+- My Phone: ${orderData.senderPhone}
+- Payment: ${orderData.paymentMethod}`;
+    
+    onSendMessage(message, [], mode);
+  };
+
+  // Handle quick action click
+  const handleQuickAction = (action: string) => {
+    onSendMessage(action, [], mode);
+  };
+
   // Empty state - centered welcome
   if (messages.length === 0) {
     return (
-      <div className="flex flex-col h-full min-h-[480px] items-center justify-center px-4">
+      <div className="flex flex-col h-full min-h-[400px] sm:min-h-[480px] items-center justify-center px-3 sm:px-4 safe-area-inset">
         <div className="w-full max-w-2xl mx-auto">
-          <div className="text-center mb-8">
-            <h1 className="text-3xl font-bold mb-2">Ikamba AI</h1>
-            <p className="text-muted-foreground text-sm">Advanced AI for University Students</p>
+          {/* Welcome Header - Mobile optimized */}
+          <div className="text-center mb-6 sm:mb-8">
+            <div className="inline-flex items-center justify-center p-3 rounded-2xl bg-primary/10 mb-3">
+              <DollarSign className="h-8 w-8 sm:h-10 sm:w-10 text-primary" />
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-bold mb-2">Ikamba AI</h1>
+            <p className="text-muted-foreground text-xs sm:text-sm px-4">
+              Send money to Africa instantly. Just tell me where and how much!
+            </p>
+          </div>
+
+          {/* Quick Actions - Mobile friendly grid */}
+          <div className="grid grid-cols-2 gap-2 mb-4 px-2">
+            {QUICK_ACTIONS.map((item) => (
+              <button
+                key={item.action}
+                onClick={() => handleQuickAction(item.action)}
+                className="p-3 rounded-xl bg-muted/50 hover:bg-muted/80 border border-border/50 text-left transition-colors"
+              >
+                <p className="text-xs sm:text-sm font-medium truncate">{item.label}</p>
+              </button>
+            ))}
           </div>
 
           {uploadedImages.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-3 justify-center">
               {uploadedImages.map((url, index) => (
                 <div key={index} className="relative group">
-                  <img src={url} alt="Upload preview" className="h-14 w-14 object-cover rounded-lg border border-border" />
+                  <img src={url} alt="Upload preview" className="h-12 w-12 sm:h-14 sm:w-14 object-cover rounded-lg border border-border" />
                   <button 
                     type="button" 
                     onClick={() => handleRemoveImage(index)} 
-                    className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                    className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center"
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -118,39 +166,39 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
 
           <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleFileSelect} className="hidden" />
 
-          <form onSubmit={handleSubmit} className="w-full">
-            <div className="flex items-center gap-2 bg-muted/50 backdrop-blur-lg border border-border rounded-full px-2 h-14">
+          <form onSubmit={handleSubmit} className="w-full px-2">
+            <div className="flex items-center gap-1.5 sm:gap-2 bg-muted/50 backdrop-blur-lg border border-border rounded-full px-2 h-12 sm:h-14">
               <button 
                 type="button" 
                 onClick={() => fileInputRef.current?.click()} 
                 disabled={isStreaming || isUploading} 
-                className="flex-shrink-0 rounded-full flex items-center justify-center transition-all bg-zinc-800 hover:bg-zinc-700 text-white disabled:opacity-50 h-10 w-10"
+                className="flex-shrink-0 rounded-full flex items-center justify-center transition-all bg-zinc-800 hover:bg-zinc-700 text-white disabled:opacity-50 h-8 w-8 sm:h-10 sm:w-10"
                 title="Attach files"
               >
-                {isUploading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Plus className="h-5 w-5" />}
+                {isUploading ? <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" /> : <Plus className="h-4 w-4 sm:h-5 sm:w-5" />}
               </button>
 
-              <div className="flex items-center gap-1 flex-shrink-0">
+              <div className="flex items-center gap-0.5 sm:gap-1 flex-shrink-0">
                 <button 
                   type="button" 
                   onClick={() => setMode('thinking')} 
                   className={cn(
-                    "flex items-center gap-1 rounded-full text-xs font-medium transition-all px-3 py-1.5",
+                    "flex items-center gap-1 rounded-full text-[10px] sm:text-xs font-medium transition-all px-2 py-1 sm:px-3 sm:py-1.5",
                     mode === 'thinking' ? "bg-zinc-900 text-white" : "text-zinc-400 hover:text-white hover:bg-zinc-800"
                   )}
                 >
-                  <Brain className="h-3.5 w-3.5" />
+                  <Brain className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   <span className="hidden sm:inline">Advanced</span>
                 </button>
                 <button 
                   type="button" 
                   onClick={() => setMode('gpt')} 
                   className={cn(
-                    "flex items-center gap-1 rounded-full text-xs font-medium transition-all px-3 py-1.5",
+                    "flex items-center gap-1 rounded-full text-[10px] sm:text-xs font-medium transition-all px-2 py-1 sm:px-3 sm:py-1.5",
                     mode === 'gpt' ? "bg-zinc-900 text-white" : "text-zinc-400 hover:text-white hover:bg-zinc-800"
                   )}
                 >
-                  <Zap className="h-3.5 w-3.5" />
+                  <Zap className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   <span className="hidden sm:inline">Chat</span>
                 </button>
               </div>
@@ -161,8 +209,8 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={mode === 'thinking' ? "Ask anything..." : "Message..."}
-                className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground text-base"
+                placeholder={mode === 'thinking' ? "Send 5000 RUB to Rwanda..." : "Message..."}
+                className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground text-sm sm:text-base"
                 disabled={isStreaming || isUploading}
               />
 
@@ -170,9 +218,9 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
                 type="submit" 
                 size="sm"
                 disabled={(!input.trim() && uploadedImages.length === 0) || isStreaming || isUploading} 
-                className="flex-shrink-0 rounded-full bg-primary hover:bg-primary/90 h-10 w-10 p-0"
+                className="flex-shrink-0 rounded-full bg-primary hover:bg-primary/90 h-8 w-8 sm:h-10 sm:w-10 p-0"
               >
-                {isStreaming ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
+                {isStreaming ? <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" /> : <Send className="h-4 w-4 sm:h-5 sm:w-5" />}
               </Button>
             </div>
           </form>
@@ -183,9 +231,9 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
 
   // Chat state with messages
   return (
-    <div className="relative flex flex-col h-full min-h-[520px]">
-      <ScrollArea className="flex-1 px-4 lg:px-8" ref={scrollRef}>
-        <div className="max-w-3xl mx-auto py-6 space-y-4 pb-32">
+    <div className="relative flex flex-col h-full min-h-[400px] sm:min-h-[520px]">
+      <ScrollArea className="flex-1 px-2 sm:px-4 lg:px-8" ref={scrollRef}>
+        <div className="max-w-3xl mx-auto py-4 sm:py-6 space-y-3 sm:space-y-4 pb-28 sm:pb-32">
           {messages.map((message, index) => (
             <MessageBubble 
               key={message.id || index} 
@@ -193,31 +241,32 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
               className="animate-fade-in-up" 
               style={{ animationDelay: index * 30 + 'ms' }}
               onSelectRecipient={handleSelectRecipient}
+              onSubmitOrder={handleSubmitOrder}
             />
           ))}
           {isStreaming && (
-            <div className="flex items-center gap-2 text-muted-foreground pl-12">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span className="text-sm">Thinking...</span>
+            <div className="flex items-center gap-2 text-muted-foreground pl-10 sm:pl-12">
+              <Loader2 className="h-3.5 w-3.5 sm:h-4 sm:w-4 animate-spin" />
+              <span className="text-xs sm:text-sm">Thinking...</span>
             </div>
           )}
         </div>
       </ScrollArea>
 
-      {/* Fixed bottom input */}
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background via-background to-transparent pt-6 pb-4 px-4">
+      {/* Fixed bottom input - Mobile optimized */}
+      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background via-background to-transparent pt-4 sm:pt-6 pb-3 sm:pb-4 px-2 sm:px-4 safe-area-inset-bottom">
         <div className="max-w-2xl mx-auto">
           {uploadedImages.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-3 justify-center">
+            <div className="flex flex-wrap gap-2 mb-2 sm:mb-3 justify-center">
               {uploadedImages.map((url, index) => (
                 <div key={index} className="relative group">
-                  <img src={url} alt="Upload preview" className="h-12 w-12 object-cover rounded-lg border border-border" />
+                  <img src={url} alt="Upload preview" className="h-10 w-10 sm:h-12 sm:w-12 object-cover rounded-lg border border-border" />
                   <button 
                     type="button" 
                     onClick={() => handleRemoveImage(index)} 
-                    className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                    className="absolute -top-1 -right-1 h-4 w-4 sm:h-5 sm:w-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center"
                   >
-                    <X className="h-3 w-3" />
+                    <X className="h-2.5 w-2.5 sm:h-3 sm:w-3" />
                   </button>
                 </div>
               ))}
@@ -227,38 +276,38 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
           <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleFileSelect} className="hidden" />
 
           <form onSubmit={handleSubmit} className="w-full">
-            <div className="flex items-center gap-2 bg-muted/50 backdrop-blur-lg border border-border rounded-full px-2 h-12">
+            <div className="flex items-center gap-1.5 sm:gap-2 bg-muted/50 backdrop-blur-lg border border-border rounded-full px-1.5 sm:px-2 h-11 sm:h-12">
               <button 
                 type="button" 
                 onClick={() => fileInputRef.current?.click()} 
                 disabled={isStreaming || isUploading} 
-                className="flex-shrink-0 rounded-full flex items-center justify-center transition-all bg-zinc-800 hover:bg-zinc-700 text-white disabled:opacity-50 h-8 w-8"
+                className="flex-shrink-0 rounded-full flex items-center justify-center transition-all bg-zinc-800 hover:bg-zinc-700 text-white disabled:opacity-50 h-7 w-7 sm:h-8 sm:w-8"
                 title="Attach files"
               >
-                {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                {isUploading ? <Loader2 className="h-3.5 w-3.5 sm:h-4 sm:w-4 animate-spin" /> : <Plus className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
               </button>
 
-              <div className="flex items-center gap-1 flex-shrink-0">
+              <div className="flex items-center gap-0.5 flex-shrink-0">
                 <button 
                   type="button" 
                   onClick={() => setMode('thinking')} 
                   className={cn(
-                    "flex items-center gap-1 rounded-full text-xs font-medium transition-all px-2 py-1",
+                    "flex items-center gap-0.5 rounded-full text-[10px] sm:text-xs font-medium transition-all px-1.5 py-0.5 sm:px-2 sm:py-1",
                     mode === 'thinking' ? "bg-zinc-900 text-white" : "text-zinc-400 hover:text-white hover:bg-zinc-800"
                   )}
                 >
-                  <Brain className="h-3 w-3" />
+                  <Brain className="h-2.5 w-2.5 sm:h-3 sm:w-3" />
                   <span className="hidden sm:inline">Advanced</span>
                 </button>
                 <button 
                   type="button" 
                   onClick={() => setMode('gpt')} 
                   className={cn(
-                    "flex items-center gap-1 rounded-full text-xs font-medium transition-all px-2 py-1",
+                    "flex items-center gap-0.5 rounded-full text-[10px] sm:text-xs font-medium transition-all px-1.5 py-0.5 sm:px-2 sm:py-1",
                     mode === 'gpt' ? "bg-zinc-900 text-white" : "text-zinc-400 hover:text-white hover:bg-zinc-800"
                   )}
                 >
-                  <Zap className="h-3 w-3" />
+                  <Zap className="h-2.5 w-2.5 sm:h-3 sm:w-3" />
                   <span className="hidden sm:inline">Chat</span>
                 </button>
               </div>
@@ -269,8 +318,8 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={mode === 'thinking' ? "Ask anything..." : "Message..."}
-                className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground text-sm"
+                placeholder="Send 5000 RUB to Rwanda..."
+                className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground text-xs sm:text-sm"
                 disabled={isStreaming || isUploading}
               />
 
@@ -278,9 +327,9 @@ export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInte
                 type="submit" 
                 size="sm"
                 disabled={(!input.trim() && uploadedImages.length === 0) || isStreaming || isUploading} 
-                className="flex-shrink-0 rounded-full bg-primary hover:bg-primary/90 h-8 w-8 p-0"
+                className="flex-shrink-0 rounded-full bg-primary hover:bg-primary/90 h-7 w-7 sm:h-8 sm:w-8 p-0"
               >
-                {isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                {isStreaming ? <Loader2 className="h-3.5 w-3.5 sm:h-4 sm:w-4 animate-spin" /> : <Send className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
               </Button>
             </div>
           </form>

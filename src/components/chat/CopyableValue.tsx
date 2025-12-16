@@ -26,20 +26,20 @@ export function CopyableValue({ label, value, suffix, className }: CopyableValue
 
   return (
     <div className={cn(
-      "inline-flex items-center gap-2 bg-primary/5 hover:bg-primary/10 rounded-lg px-2 py-1 transition-colors group/copy cursor-pointer",
+      "inline-flex items-center gap-1.5 sm:gap-2 bg-primary/5 hover:bg-primary/10 active:bg-primary/15 rounded-lg px-1.5 sm:px-2 py-0.5 sm:py-1 transition-colors group/copy cursor-pointer",
       className
     )} onClick={handleCopy}>
-      <span className="text-muted-foreground text-sm">{label}:</span>
-      <span className="font-mono font-semibold text-foreground">{value}</span>
-      {suffix && <span className="text-muted-foreground text-sm">{suffix}</span>}
+      <span className="text-muted-foreground text-[10px] sm:text-sm">{label}:</span>
+      <span className="font-mono font-semibold text-foreground text-xs sm:text-base">{value}</span>
+      {suffix && <span className="text-muted-foreground text-[10px] sm:text-sm">{suffix}</span>}
       <button
-        className="opacity-0 group-hover/copy:opacity-100 transition-opacity p-0.5 rounded hover:bg-primary/20"
+        className="sm:opacity-0 sm:group-hover/copy:opacity-100 transition-opacity p-0.5 rounded hover:bg-primary/20"
         title="Copy"
       >
         {copied ? (
-          <Check className="h-3.5 w-3.5 text-green-600" />
+          <Check className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-green-600" />
         ) : (
-          <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+          <Copy className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-muted-foreground" />
         )}
       </button>
     </div>

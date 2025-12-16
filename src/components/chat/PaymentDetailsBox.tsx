@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Copy, Check, CreditCard, Wallet } from 'lucide-react';
+import { Copy, Check, CreditCard, Wallet, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface PaymentDetailsBoxProps {
@@ -13,7 +13,7 @@ interface PaymentDetailsBoxProps {
   className?: string;
 }
 
-function CopyButton({ value, label }: { value: string; label: string }) {
+function CopyButton({ value, label, size = 'default' }: { value: string; label: string; size?: 'default' | 'sm' }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -29,22 +29,39 @@ function CopyButton({ value, label }: { value: string; label: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="flex items-center gap-1.5 px-2 py-1 text-xs rounded-md bg-primary/10 hover:bg-primary/20 text-primary transition-colors"
+      className={cn(
+        "flex items-center gap-1 rounded-md bg-primary/10 hover:bg-primary/20 text-primary transition-colors active:scale-95",
+        size === 'sm' ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-1 text-xs"
+      )}
       title={`Copy ${label}`}
     >
       {copied ? (
         <>
-          <Check className="h-3 w-3" />
+          <Check className={size === 'sm' ? "h-2.5 w-2.5" : "h-3 w-3"} />
           <span>Copied!</span>
         </>
       ) : (
         <>
-          <Copy className="h-3 w-3" />
+          <Copy className={size === 'sm' ? "h-2.5 w-2.5" : "h-3 w-3"} />
           <span>Copy</span>
         </>
       )}
     </button>
   );
+}
+
+// Format number with commas
+function formatNumber(value: string | number): string {
+  if (!value) return '0';
+  const cleanValue = String(value).replace(/,/g, '');
+  const num = Number(cleanValue);
+  return isNaN(num) ? String(value) : num.toLocaleString();
+}
+
+// Format card number with spaces
+function formatCardNumber(num: string): string {
+  const clean = num.replace(/\s/g, '');
+  return clean.replace(/(.{4})/g, '$1 ').trim();
 }
 
 export function PaymentDetailsBox({
@@ -55,78 +72,104 @@ export function PaymentDetailsBox({
   provider,
   className,
 }: PaymentDetailsBoxProps) {
+  const [isExpanded, setIsExpanded] = useState(true);
+
   return (
     <div className={cn(
-      "rounded-xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden my-3",
+      "rounded-xl border border-border/60 bg-card/95 backdrop-blur-sm overflow-hidden my-2 sm:my-3 shadow-sm",
       className
     )}>
-      {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2.5 bg-primary/5 border-b border-border/40">
-        <Wallet className="h-4 w-4 text-primary" />
-        <span className="text-sm font-medium">Payment Details</span>
-      </div>
-
-      {/* Amount Box */}
-      <div className="p-4 border-b border-border/40">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs text-muted-foreground mb-1">Amount to Pay</p>
-            <p className="text-2xl font-bold text-foreground">
-              {amount} <span className="text-base font-semibold text-muted-foreground">{currency}</span>
-            </p>
-          </div>
-          <CopyButton value={amount} label="amount" />
+      {/* Header - Collapsible on mobile */}
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center justify-between gap-2 px-3 sm:px-4 py-2 sm:py-2.5 bg-primary/5 border-b border-border/40 transition-colors hover:bg-primary/10"
+      >
+        <div className="flex items-center gap-2">
+          <Wallet className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-primary" />
+          <span className="text-xs sm:text-sm font-medium">Payment Details</span>
         </div>
-      </div>
-
-      {/* Account Details Box */}
-      <div className="p-4 space-y-3">
-        {/* Account/Card Number */}
-        <div className="flex items-center justify-between">
-          <div className="flex-1 min-w-0">
-            <p className="text-xs text-muted-foreground mb-1">
-              {provider?.toLowerCase().includes('sber') || provider?.toLowerCase().includes('bank') 
-                ? 'Card Number (Pay to this card)' 
-                : provider 
-                  ? `${provider} Number` 
-                  : 'Account/Card Number'}
-            </p>
-            <p className="text-base font-mono font-medium truncate">{accountNumber}</p>
-          </div>
-          <CopyButton value={accountNumber} label="card number" />
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] sm:text-xs text-muted-foreground sm:hidden">
+            {isExpanded ? 'Hide' : 'Show'}
+          </span>
+          {isExpanded ? (
+            <ChevronUp className="h-3.5 w-3.5 text-muted-foreground sm:hidden" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground sm:hidden" />
+          )}
         </div>
+      </button>
 
-        {/* Cardholder - Recipient of payment (Ikamba) */}
-        <div className="flex items-center justify-between">
-          <div className="flex-1 min-w-0">
-            <p className="text-xs text-muted-foreground mb-1">Cardholder (Pay to)</p>
-            <p className="text-base font-medium truncate">{accountHolder}</p>
+      <div className={cn(
+        "transition-all duration-200 overflow-hidden",
+        isExpanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0 sm:max-h-[500px] sm:opacity-100"
+      )}>
+        {/* Amount Box - Prominent display */}
+        <div className="p-3 sm:p-4 border-b border-border/40 bg-gradient-to-r from-primary/5 to-transparent">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[10px] sm:text-xs text-muted-foreground mb-0.5 sm:mb-1">Amount to Pay</p>
+              <p className="text-xl sm:text-2xl font-bold text-foreground truncate">
+                {formatNumber(amount)} <span className="text-sm sm:text-base font-semibold text-muted-foreground">{currency}</span>
+              </p>
+            </div>
+            <CopyButton value={amount.replace(/,/g, '')} label="amount" />
           </div>
-          <CopyButton value={accountHolder} label="account holder" />
         </div>
 
-        {/* Provider/Bank */}
-        {provider && (
-          <div className="flex items-center justify-between pt-2 border-t border-border/40">
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-muted-foreground mb-1">Bank</p>
-              <p className="text-base font-medium truncate">{provider}</p>
+        {/* Account Details Box - Compact on mobile */}
+        <div className="p-3 sm:p-4 space-y-2 sm:space-y-3">
+          {/* Account/Card Number - Most important, highlighted */}
+          <div className="p-2.5 sm:p-3 rounded-lg bg-muted/50 border border-border/40">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] sm:text-xs text-muted-foreground mb-1">
+                  {provider?.toLowerCase().includes('sber') || provider?.toLowerCase().includes('bank') 
+                    ? 'Card Number' 
+                    : provider 
+                      ? `${provider} Number` 
+                      : 'Account/Card Number'}
+                </p>
+                <p className="text-sm sm:text-base font-mono font-bold text-primary break-all">
+                  {formatCardNumber(accountNumber)}
+                </p>
+              </div>
+              <CopyButton value={accountNumber.replace(/\s/g, '')} label="card number" size="sm" />
             </div>
           </div>
-        )}
-      </div>
 
-      {/* Footer - Important reminder about payment proof */}
-      <div className="px-4 py-3 bg-amber-50 dark:bg-amber-950/30 border-t border-amber-200 dark:border-amber-900">
-        <div className="flex items-start gap-2">
-          <span className="text-amber-600 dark:text-amber-400 text-sm">⚠️</span>
-          <div>
-            <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
-              Upload Payment Proof Required
-            </p>
-            <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
-              Send screenshot or PDF receipt after payment. We cannot process without proof.
-            </p>
+          {/* Cardholder - Recipient of payment (Ikamba) */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] sm:text-xs text-muted-foreground mb-0.5">Cardholder Name</p>
+              <p className="text-sm sm:text-base font-medium truncate">{accountHolder}</p>
+            </div>
+            <CopyButton value={accountHolder} label="account holder" size="sm" />
+          </div>
+
+          {/* Provider/Bank */}
+          {provider && (
+            <div className="flex items-center justify-between pt-2 border-t border-border/40">
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] sm:text-xs text-muted-foreground mb-0.5">Bank</p>
+                <p className="text-sm sm:text-base font-medium truncate">{provider}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer - Important reminder about payment proof */}
+        <div className="px-3 sm:px-4 py-2.5 sm:py-3 bg-amber-50 dark:bg-amber-950/30 border-t border-amber-200 dark:border-amber-900">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-xs sm:text-sm font-medium text-amber-800 dark:text-amber-300">
+                Upload Payment Proof
+              </p>
+              <p className="text-[10px] sm:text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                Send screenshot after payment to complete your transfer.
+              </p>
+            </div>
           </div>
         </div>
       </div>
