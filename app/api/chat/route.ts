@@ -732,20 +732,31 @@ Transfer is being processed. You will receive confirmation shortly.`;
         async start(controller) {
           try {
             let buffer = '';
+            let isBufferingTag = false;
+            
             for await (const chunk of finalResponse) {
               const content = chunk.choices[0]?.delta?.content || '';
               if (content) {
                 buffer += content;
                 
-                // Check if buffer contains a complete [[TRANSFER:...]] tag
-                if (buffer.includes('[[TRANSFER:') && buffer.includes(']]')) {
+                // Check if we're starting a tag
+                if (buffer.includes('[[') && !buffer.includes(']]')) {
+                  isBufferingTag = true;
+                  // Don't send yet - wait for complete tag
+                  continue;
+                }
+                
+                // Check if buffer contains a complete tag
+                if (buffer.includes('[[') && buffer.includes(']]')) {
                   // Fix malformed tags before sending
                   buffer = fixMalformedTransferTag(buffer);
                   controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
                   buffer = '';
-                } else {
-                  // Stream as normal if no tag detected yet
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
+                  isBufferingTag = false;
+                } else if (!isBufferingTag) {
+                  // No tag - send content directly
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
+                  buffer = '';
                 }
               }
             }
@@ -786,20 +797,31 @@ Transfer is being processed. You will receive confirmation shortly.`;
       async start(controller) {
         try {
           let buffer = '';
+          let isBufferingTag = false;
+          
           for await (const chunk of streamingResponse) {
             const content = chunk.choices[0]?.delta?.content || '';
             if (content) {
               buffer += content;
               
-              // Check if buffer contains a complete [[TRANSFER:...]] tag
-              if (buffer.includes('[[TRANSFER:') && buffer.includes(']]')) {
+              // Check if we're starting a tag
+              if (buffer.includes('[[') && !buffer.includes(']]')) {
+                isBufferingTag = true;
+                // Don't send yet - wait for complete tag
+                continue;
+              }
+              
+              // Check if buffer contains a complete tag
+              if (buffer.includes('[[') && buffer.includes(']]')) {
                 // Fix malformed tags before sending
                 buffer = fixMalformedTransferTag(buffer);
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
                 buffer = '';
-              } else {
-                // Stream as normal if no tag detected yet
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
+                isBufferingTag = false;
+              } else if (!isBufferingTag) {
+                // No tag - send content directly
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
+                buffer = '';
               }
             }
           }
