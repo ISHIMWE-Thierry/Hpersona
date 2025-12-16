@@ -237,27 +237,29 @@ ${orderData.deliveryMethod === 'mobile_money'
   // Chat state with messages
   return (
     <div className="relative flex flex-col h-full min-h-[400px] sm:min-h-[520px]">
-      <ScrollArea className="flex-1 px-2 sm:px-4 lg:px-8" ref={scrollRef}>
-        <div className="max-w-3xl mx-auto py-4 sm:py-6 space-y-3 sm:space-y-4 pb-28 sm:pb-32">
-          {messages.map((message, index) => (
-            <MessageBubble 
-              key={message.id || index} 
-              message={message} 
-              className="animate-fade-in-up" 
-              style={{ animationDelay: index * 30 + 'ms' }}
-              onSelectRecipient={handleSelectRecipient}
-              onSubmitOrder={handleSubmitOrder}
-              onQuickReply={handleQuickReply}
-            />
-          ))}
-          {isStreaming && (
-            <div className="flex items-center gap-2 text-muted-foreground pl-10 sm:pl-12">
-              <Loader2 className="h-3.5 w-3.5 sm:h-4 sm:w-4 animate-spin" />
-              <span className="text-xs sm:text-sm">Thinking...</span>
-            </div>
-          )}
+      <div className="flex-1 overflow-y-auto px-2 sm:px-4 lg:px-8" ref={scrollRef}>
+        <div className="max-w-3xl mx-auto min-h-full flex flex-col justify-end py-4 sm:py-6 pb-28 sm:pb-32">
+          <div className="space-y-3 sm:space-y-4">
+            {messages.map((message, index) => (
+              <MessageBubble 
+                key={message.id || index} 
+                message={message} 
+                className="animate-fade-in-up" 
+                style={{ animationDelay: index * 30 + 'ms' }}
+                onSelectRecipient={handleSelectRecipient}
+                onSubmitOrder={handleSubmitOrder}
+                onQuickReply={handleQuickReply}
+              />
+            ))}
+            {isStreaming && (
+              <div className="flex items-center gap-2 text-muted-foreground pl-10 sm:pl-12">
+                <Loader2 className="h-3.5 w-3.5 sm:h-4 sm:w-4 animate-spin" />
+                <span className="text-xs sm:text-sm">Thinking...</span>
+              </div>
+            )}
+          </div>
         </div>
-      </ScrollArea>
+      </div>
 
       {/* Fixed bottom input - Mobile optimized */}
       <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background via-background to-transparent pt-4 sm:pt-6 pb-3 sm:pb-4 px-2 sm:px-4 safe-area-inset-bottom">

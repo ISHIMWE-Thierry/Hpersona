@@ -39,7 +39,7 @@ export default function Home() {
         collection(db, 'conversations'),
         where('userId', '==', user.uid),
         orderBy('updatedAt', 'desc'),
-        limit(10)
+        limit(50) // Load more conversations for scrolling
       );
 
       const snapshot = await getDocs(q);

@@ -26,80 +26,79 @@ export function Sidebar({
 
   const sidebarContent = (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border p-4">
-        <h1 className="font-display text-2xl font-bold gradient-text">
-          Ikamba AI
-        </h1>
+      {/* Header - New Chat Button */}
+      <div className="flex items-center justify-between border-b border-border p-3">
+        <Button
+          onClick={() => {
+            onNewChat();
+            setIsMobileOpen(false);
+          }}
+          className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground"
+        >
+          <Plus className="mr-2 h-4 w-4" />
+          New Chat
+        </Button>
         <Button
           variant="ghost"
           size="icon"
-          className="lg:hidden"
+          className="ml-2 lg:hidden"
           onClick={() => setIsMobileOpen(false)}
         >
           <X className="h-5 w-5" />
         </Button>
       </div>
 
-      {/* New Chat Button */}
-      <div className="p-4">
-        <Button
-          onClick={() => {
-            onNewChat();
-            setIsMobileOpen(false);
-          }}
-          className="w-full bg-primary hover:bg-primary/90 text-primary-foreground"
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          New Chat
-        </Button>
-      </div>
-
-      {/* Conversations List */}
-      <ScrollArea className="flex-1 px-2">
-        <div className="space-y-1 py-2">
-          {conversations.map((conversation) => (
-            <div
-              key={conversation.id}
-              className={cn(
-                "group flex items-center gap-2 rounded-lg px-3 py-2 transition-all hover:bg-sidebar-accent cursor-pointer",
-                currentConversationId === conversation.id && "bg-sidebar-accent"
-              )}
-              onClick={() => {
-                onSelectConversation(conversation.id);
-                setIsMobileOpen(false);
-              }}
-            >
-              <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="flex-1 truncate text-sm">
-                {conversation.title}
-              </span>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeleteConversation(conversation.id);
+      {/* Conversations List - Scrollable */}
+      <ScrollArea className="flex-1">
+        <div className="space-y-1 p-2">
+          {conversations.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-4">
+              No conversations yet
+            </p>
+          ) : (
+            conversations.map((conversation) => (
+              <div
+                key={conversation.id}
+                className={cn(
+                  "group flex items-center gap-2 rounded-lg px-3 py-2 transition-all hover:bg-sidebar-accent cursor-pointer",
+                  currentConversationId === conversation.id && "bg-sidebar-accent"
+                )}
+                onClick={() => {
+                  onSelectConversation(conversation.id);
+                  setIsMobileOpen(false);
                 }}
               >
-                <Trash2 className="h-3 w-3" />
-              </Button>
-            </div>
-          ))}
+                <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="flex-1 truncate text-sm">
+                  {conversation.title}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteConversation(conversation.id);
+                  }}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
+            ))
+          )}
         </div>
       </ScrollArea>
 
       {/* User Section */}
-      <div className="border-t border-border p-4">
+      <div className="border-t border-border p-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
               <span className="text-sm font-medium text-primary">
                 {user?.email?.[0].toUpperCase()}
               </span>
             </div>
-            <span className="text-sm truncate max-w-[150px]">
+            <span className="text-sm truncate">
               {user?.email}
             </span>
           </div>
@@ -108,6 +107,7 @@ export function Sidebar({
             size="icon"
             onClick={signOut}
             title="Sign out"
+            className="flex-shrink-0"
           >
             <LogOut className="h-4 w-4" />
           </Button>
