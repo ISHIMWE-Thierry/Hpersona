@@ -256,14 +256,17 @@ export default function Home() {
         onDeleteConversation={deleteConversation}
       />
       <main className="flex-1 flex flex-col h-screen min-h-0 overflow-hidden relative bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-900 dark:to-blue-950">
-        {/* Fixed top header with avatar dropdown */}
-        <header className="sticky top-0 flex items-center justify-center px-4 py-3 border-b border-white/20 dark:border-white/10 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl backdrop-saturate-150 shadow-sm z-50">
+        {/* Fixed top header with avatar dropdown - always visible */}
+        <header className="fixed top-0 right-0 left-0 lg:left-64 flex items-center justify-center px-4 py-3 border-b border-white/20 dark:border-white/10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl backdrop-saturate-150 shadow-sm z-40">
+          {/* Spacer for mobile menu button */}
+          <div className="w-10 lg:hidden"></div>
           <h1 className="text-lg font-semibold bg-gradient-to-r from-blue-600 to-blue-400 bg-clip-text text-transparent">Ikamba AI</h1>
           <div className="absolute right-4">
             <DropdownAvatar />
           </div>
         </header>
-        <div className="flex-1 min-h-0 overflow-auto">
+        {/* Content with top padding to account for fixed header */}
+        <div className="flex-1 min-h-0 overflow-auto pt-14">
           <ChatInterface
             messages={messages}
             isStreaming={isStreaming}
