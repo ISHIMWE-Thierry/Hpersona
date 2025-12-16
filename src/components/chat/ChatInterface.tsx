@@ -113,6 +113,11 @@ ${orderData.deliveryMethod === 'mobile_money'
     onSendMessage(message, [], mode);
   };
 
+  // Handle quick reply selection
+  const handleQuickReply = (value: string) => {
+    onSendMessage(value, [], mode);
+  };
+
   // Handle quick action click
   const handleQuickAction = (action: string) => {
     onSendMessage(action, [], mode);
@@ -242,6 +247,7 @@ ${orderData.deliveryMethod === 'mobile_money'
               style={{ animationDelay: index * 30 + 'ms' }}
               onSelectRecipient={handleSelectRecipient}
               onSubmitOrder={handleSubmitOrder}
+              onQuickReply={handleQuickReply}
             />
           ))}
           {isStreaming && (

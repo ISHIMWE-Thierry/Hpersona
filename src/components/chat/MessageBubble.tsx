@@ -10,6 +10,7 @@ import { TransferSummaryBox, extractTransferFromContent } from './TransferSummar
 import { OrderSuccessBox, extractSuccessFromContent } from './OrderSuccessBox';
 import { RecentRecipientsBox, extractRecipientsFromContent } from './RecentRecipientsBox';
 import { OrderFlowBox, extractOrderFlowFromContent } from './OrderFlowBox';
+import { QuickRepliesBox, extractQuickRepliesFromContent, detectQuestionReplies } from './QuickRepliesBox';
 import { CopyableValue } from './CopyableValue';
 
 interface MessageBubbleProps {
@@ -18,6 +19,7 @@ interface MessageBubbleProps {
   style?: React.CSSProperties;
   onSelectRecipient?: (recipient: any, index: number) => void;
   onSubmitOrder?: (orderData: any) => void;
+  onQuickReply?: (value: string) => void;
 }
 
 // Process content to render copyable tags as React components
@@ -73,7 +75,20 @@ function renderContentWithCopyables(content: string): React.ReactNode {
   return <>{parts}</>;
 }
 
-export function MessageBubble({ message, className, style, onSelectRecipient, onSubmitOrder }: MessageBubbleProps) {
+// Clean all remaining tags from content that weren't properly parsed
+function cleanAllTags(content: string): string {
+  return content
+    // Remove any [[TAG:...]] patterns
+    .replace(/\[\[[A-Z_]+:[^\]]*\]\]?/gi, '')
+    // Remove any standalone ]] or [[
+    .replace(/\]\]/g, '')
+    .replace(/\[\[/g, '')
+    // Clean up multiple spaces and newlines
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+export function MessageBubble({ message, className, style, onSelectRecipient, onSubmitOrder, onQuickReply }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   
   // Extract order flow from assistant messages
@@ -97,9 +112,21 @@ export function MessageBubble({ message, className, style, onSelectRecipient, on
     : { cleanContent: contentAfterPayment, successDetails: null };
   
   // Extract recent recipients from assistant messages
-  const { cleanContent, recipients } = !isUser 
+  const { cleanContent: contentAfterRecipients, recipients } = !isUser 
     ? extractRecipientsFromContent(contentAfterSuccess)
     : { cleanContent: contentAfterSuccess, recipients: null };
+  
+  // Extract quick replies from assistant messages
+  const { cleanContent: contentAfterReplies, quickReplies: explicitReplies } = !isUser 
+    ? extractQuickRepliesFromContent(contentAfterRecipients)
+    : { cleanContent: contentAfterRecipients, quickReplies: null };
+  
+  // Auto-detect quick replies from questions
+  const autoReplies = !isUser && !explicitReplies ? detectQuestionReplies(contentAfterReplies) : null;
+  const quickReplies = explicitReplies || autoReplies;
+  
+  // Final cleanup - remove any remaining tags
+  const cleanContent = cleanAllTags(contentAfterReplies);
   
   // Check if content has copyable tags
   const hasCopyableTags = cleanContent.includes('[[COPY:');
@@ -112,7 +139,7 @@ export function MessageBubble({ message, className, style, onSelectRecipient, on
   return (
     <div
       className={cn(
-        "flex gap-2 sm:gap-4 group",
+        "flex gap-2 sm:gap-4 group w-full",
         isUser && "justify-end",
         className
       )}
@@ -126,7 +153,7 @@ export function MessageBubble({ message, className, style, onSelectRecipient, on
       
       <div
         className={cn(
-          "max-w-[85%] sm:max-w-[80%] rounded-xl sm:rounded-2xl px-3 py-2 sm:px-4 sm:py-3 transition-all",
+          "max-w-[calc(100%-3rem)] sm:max-w-[80%] rounded-xl sm:rounded-2xl px-3 py-2 sm:px-4 sm:py-3 transition-all overflow-hidden",
           isUser
             ? "bg-primary text-primary-foreground"
             : "bg-muted/50 glass border border-border"
@@ -163,11 +190,11 @@ export function MessageBubble({ message, className, style, onSelectRecipient, on
           <>
             {/* If content has copyable tags, render with special handling */}
             {hasCopyableTags ? (
-              <div className="text-xs sm:text-sm leading-relaxed space-y-1">
+              <div className="text-xs sm:text-sm leading-relaxed space-y-1 break-words overflow-wrap-anywhere">
                 {renderContentWithCopyables(cleanContent)}
               </div>
             ) : (
-              <div className="prose prose-xs sm:prose-sm dark:prose-invert max-w-none prose-p:my-0.5 sm:prose-p:my-1 prose-headings:my-1 sm:prose-headings:my-2 prose-ul:my-0.5 sm:prose-ul:my-1 prose-ol:my-0.5 sm:prose-ol:my-1 prose-li:my-0 sm:prose-li:my-0.5 prose-pre:bg-background/50 prose-pre:border prose-pre:border-border prose-code:text-primary prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none text-xs sm:text-sm">
+              <div className="prose prose-xs sm:prose-sm dark:prose-invert max-w-none prose-p:my-0.5 sm:prose-p:my-1 prose-headings:my-1 sm:prose-headings:my-2 prose-ul:my-0.5 sm:prose-ul:my-1 prose-ol:my-0.5 sm:prose-ol:my-1 prose-li:my-0 sm:prose-li:my-0.5 prose-pre:bg-background/50 prose-pre:border prose-pre:border-border prose-code:text-primary prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none text-xs sm:text-sm break-words [overflow-wrap:anywhere]">
                 <ReactMarkdown
                   remarkPlugins={[remarkMath]}
                   rehypePlugins={[rehypeKatex]}
@@ -188,7 +215,7 @@ export function MessageBubble({ message, className, style, onSelectRecipient, on
                     },
                     // Better paragraph handling
                     p({ children }) {
-                      return <p className="mb-2 last:mb-0">{children}</p>;
+                      return <p className="mb-2 last:mb-0 break-words">{children}</p>;
                     },
                   }}
                 >
@@ -253,6 +280,14 @@ export function MessageBubble({ message, className, style, onSelectRecipient, on
               <RecentRecipientsBox
                 recipients={recipients}
                 onSelect={onSelectRecipient}
+              />
+            )}
+            
+            {/* Quick Reply Buttons */}
+            {quickReplies && quickReplies.length > 0 && onQuickReply && (
+              <QuickRepliesBox
+                replies={quickReplies}
+                onSelect={(reply) => onQuickReply(reply.value)}
               />
             )}
           </>

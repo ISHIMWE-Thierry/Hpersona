@@ -236,12 +236,16 @@ export function extractPaymentFromContent(content: string): {
   cleanContent: string;
   paymentDetails: PaymentDetailsBoxProps | null;
 } {
-  // Check for explicit payment marker first
-  const paymentMatch = content.match(/\[\[PAYMENT:[^\]]+\]\]/);
+  let cleanContent = content;
+  
+  // Check for explicit payment marker first - handle malformed tags too
+  const paymentMatch = content.match(/\[\[PAYMENT:[^\]]*\]\]?/);
   if (paymentMatch) {
     const paymentDetails = parsePaymentDetails(content);
-    // Remove the [[PAYMENT:...]] tag from displayed content
-    const cleanContent = content.replace(/\[\[PAYMENT:[^\]]+\]\]/g, '').trim();
+    // Remove the [[PAYMENT:...]] tag from displayed content (handle missing closing brackets)
+    cleanContent = content.replace(/\[\[PAYMENT:[^\]]*\]\]?/g, '').trim();
+    // Also clean any leftover brackets
+    cleanContent = cleanContent.replace(/^\]\]/g, '').replace(/\]\]$/g, '').trim();
     return { cleanContent, paymentDetails };
   }
 
@@ -259,8 +263,8 @@ export function extractPaymentFromContent(content: string): {
   if (hasPayTo && hasAmount && hasAccount) {
     const paymentDetails = parsePaymentDetails(content);
     // Don't remove the text, just enhance it with the payment box
-    return { cleanContent: content, paymentDetails };
+    return { cleanContent, paymentDetails };
   }
 
-  return { cleanContent: content, paymentDetails: null };
+  return { cleanContent, paymentDetails: null };
 }

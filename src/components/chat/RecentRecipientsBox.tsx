@@ -96,38 +96,50 @@ export function RecentRecipientsBox({
 }
 
 // Extract recent recipients from AI content
-// Format: [[RECIPIENTS:name1|phone1|provider1,name2|phone2|provider2,...]]
+// Format: [[RECIPIENTS:name1|phone1|||country1,name2|phone2|||country2,...]]
 export function extractRecipientsFromContent(content: string): {
   cleanContent: string;
   recipients: Recipient[] | null;
 } {
-  const recipientsRegex = /\[\[RECIPIENTS:(.*?)\]\]/;
-  const match = content.match(recipientsRegex);
+  // More robust regex that handles nested brackets and various formats
+  const recipientsRegex = /\[\[RECIPIENTS:([\s\S]*?)\]\]/g;
+  let match;
+  let recipients: Recipient[] = [];
+  let cleanContent = content;
   
-  if (!match) {
-    return { cleanContent: content, recipients: null };
+  while ((match = recipientsRegex.exec(content)) !== null) {
+    try {
+      const recipientData = match[1];
+      const recipientEntries = recipientData.split(',');
+      
+      const parsedRecipients: Recipient[] = recipientEntries.map(entry => {
+        const parts = entry.split('|');
+        return {
+          name: parts[0]?.trim() || '',
+          phone: parts[1]?.trim() || undefined,
+          provider: parts[2]?.trim() || undefined,
+          bank: parts[3]?.trim() || undefined,
+          country: parts[4]?.trim() || undefined,
+        };
+      }).filter(r => r.name); // Filter out empty entries
+      
+      recipients = [...recipients, ...parsedRecipients];
+    } catch (error) {
+      console.error('Error parsing recipients:', error);
+    }
   }
   
-  try {
-    const recipientData = match[1];
-    const recipientEntries = recipientData.split(',');
-    
-    const recipients: Recipient[] = recipientEntries.map(entry => {
-      const [name, phone, provider, bank, country] = entry.split('|');
-      return {
-        name: name?.trim() || '',
-        phone: phone?.trim() || undefined,
-        provider: provider?.trim() || undefined,
-        bank: bank?.trim() || undefined,
-        country: country?.trim() || undefined,
-      };
-    }).filter(r => r.name); // Filter out empty entries
-    
-    const cleanContent = content.replace(recipientsRegex, '').trim();
-    
-    return { cleanContent, recipients: recipients.length > 0 ? recipients : null };
-  } catch (error) {
-    console.error('Error parsing recipients:', error);
-    return { cleanContent: content, recipients: null };
-  }
+  // Clean ALL [[RECIPIENTS:...]] tags from content
+  cleanContent = cleanContent.replace(/\[\[RECIPIENTS:[\s\S]*?\]\]/g, '').trim();
+  
+  // Also clean any malformed tags or leftover brackets
+  cleanContent = cleanContent
+    .replace(/\[\[RECIPIENTS[^\]]*$/g, '') // Remove incomplete tags
+    .replace(/^\]\]/g, '') // Remove leading ]]
+    .trim();
+  
+  return { 
+    cleanContent, 
+    recipients: recipients.length > 0 ? recipients : null 
+  };
 }
