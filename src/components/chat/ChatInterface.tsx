@@ -17,12 +17,12 @@ interface ChatInterfaceProps {
   onSendMessage: (content: string, images?: string[], mode?: ChatMode) => void;
 }
 
-// Quick action suggestions for money transfer
+// Quick action suggestions - general AI + money transfer
 const QUICK_ACTIONS = [
-  { label: 'Send money to Rwanda', action: 'I want to send money to Rwanda' },
-  { label: 'Send to Kenya', action: 'I want to send money to Kenya' },
-  { label: 'Check rates', action: 'What are the current exchange rates?' },
-  { label: 'Track transfer', action: 'Track my recent transfer' },
+  { label: '💰 Send money to Rwanda', action: 'I want to send money to Rwanda' },
+  { label: '💱 Check exchange rates', action: 'What are the current exchange rates?' },
+  { label: '📐 Explain a math concept', action: 'Explain Euler\'s formula with derivation' },
+  { label: '💻 Help me code', action: 'Help me write a Python function' },
 ];
 
 export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInterfaceProps) {
@@ -131,11 +131,11 @@ ${orderData.deliveryMethod === 'mobile_money'
           {/* Welcome Header - Mobile optimized */}
           <div className="text-center mb-6 sm:mb-8">
             <div className="inline-flex items-center justify-center p-3 rounded-2xl bg-primary/10 mb-3">
-              <DollarSign className="h-8 w-8 sm:h-10 sm:w-10 text-primary" />
+              <Brain className="h-8 w-8 sm:h-10 sm:w-10 text-primary" />
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold mb-2">Ikamba AI</h1>
             <p className="text-muted-foreground text-xs sm:text-sm px-4">
-              Send money to Africa instantly. Just tell me where and how much!
+              Your intelligent assistant for anything - math, coding, writing, and instant money transfers to Africa.
             </p>
           </div>
 

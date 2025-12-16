@@ -76,6 +76,20 @@ function renderContentWithCopyables(content: string): React.ReactNode {
   return <>{parts}</>;
 }
 
+// Convert LaTeX delimiters to KaTeX-compatible format
+function convertLatexDelimiters(content: string): string {
+  return content
+    // Convert \[ ... \] to $$ ... $$ (display math)
+    .replace(/\\\[/g, '$$')
+    .replace(/\\\]/g, '$$')
+    // Convert \( ... \) to $ ... $ (inline math)
+    .replace(/\\\(/g, '$')
+    .replace(/\\\)/g, '$')
+    // Fix common LaTeX escaping issues
+    .replace(/\\{/g, '\\lbrace')
+    .replace(/\\}/g, '\\rbrace');
+}
+
 // Clean all remaining tags from content that weren't properly parsed
 function cleanAllTags(content: string): string {
   return content
@@ -225,7 +239,7 @@ export function MessageBubble({ message, className, style, onSelectRecipient, on
                     },
                   }}
                 >
-                  {cleanContent}
+                  {convertLatexDelimiters(cleanContent)}
                 </ReactMarkdown>
               </div>
             )}
