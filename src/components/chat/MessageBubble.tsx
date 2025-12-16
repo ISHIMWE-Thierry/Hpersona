@@ -11,6 +11,7 @@ import { OrderSuccessBox, extractSuccessFromContent } from './OrderSuccessBox';
 import { RecentRecipientsBox, extractRecipientsFromContent } from './RecentRecipientsBox';
 import { OrderFlowBox, extractOrderFlowFromContent } from './OrderFlowBox';
 import { QuickRepliesBox, extractQuickRepliesFromContent, detectQuestionReplies } from './QuickRepliesBox';
+import { RecipientDetailsBox, extractRecipientFromContent } from './RecipientDetailsBox';
 import { CopyableValue } from './CopyableValue';
 
 interface MessageBubbleProps {
@@ -116,10 +117,15 @@ export function MessageBubble({ message, className, style, onSelectRecipient, on
     ? extractRecipientsFromContent(contentAfterSuccess)
     : { cleanContent: contentAfterSuccess, recipients: null };
   
+  // Extract recipient details (for order confirmation)
+  const { cleanContent: contentAfterRecipient, recipientDetails } = !isUser 
+    ? extractRecipientFromContent(contentAfterRecipients)
+    : { cleanContent: contentAfterRecipients, recipientDetails: null };
+  
   // Extract quick replies from assistant messages
   const { cleanContent: contentAfterReplies, quickReplies: explicitReplies } = !isUser 
-    ? extractQuickRepliesFromContent(contentAfterRecipients)
-    : { cleanContent: contentAfterRecipients, quickReplies: null };
+    ? extractQuickRepliesFromContent(contentAfterRecipient)
+    : { cleanContent: contentAfterRecipient, quickReplies: null };
   
   // Auto-detect quick replies from questions
   const autoReplies = !isUser && !explicitReplies ? detectQuestionReplies(contentAfterReplies) : null;
@@ -258,6 +264,20 @@ export function MessageBubble({ message, className, style, onSelectRecipient, on
                 accountNumber={paymentDetails.accountNumber}
                 accountHolder={paymentDetails.accountHolder}
                 provider={paymentDetails.provider}
+              />
+            )}
+            
+            {/* Recipient Details Box (shown after payment details) */}
+            {recipientDetails && (
+              <RecipientDetailsBox
+                recipientName={recipientDetails.recipientName}
+                recipientPhone={recipientDetails.recipientPhone}
+                receiveAmount={recipientDetails.receiveAmount}
+                receiveCurrency={recipientDetails.receiveCurrency}
+                provider={recipientDetails.provider}
+                bank={recipientDetails.bank}
+                accountNumber={recipientDetails.accountNumber}
+                country={recipientDetails.country}
               />
             )}
             
