@@ -11,8 +11,10 @@ import {
   createTransferOrder,
   uploadPaymentProof,
   getLatestUserTransaction,
+  getUserTransactionHistory,
   getRecentRecipients,
   sendPaymentProofReceivedEmail,
+  sendEmailToUser,
   CURRENCY_CONFIG,
   COUNTRY_CONFIG 
 } from '@/lib/ikamba-remit';
@@ -320,11 +322,12 @@ function extractTransferFromVerboseOutput(text: string): {
 // Fetch live data for AI context
 async function getRemitContext(userId?: string) {
   try {
-    const [rates, receivers, adjustments, recentRecipients] = await Promise.all([
+    const [rates, receivers, adjustments, recentRecipients, transactionHistory] = await Promise.all([
       fetchLiveRatesFromAPI(),
       getActivePaymentReceivers(),
       fetchRateAdjustments(),
-      userId ? getRecentRecipients(userId) : Promise.resolve([])
+      userId ? getRecentRecipients(userId) : Promise.resolve([]),
+      userId ? getUserTransactionHistory(userId, 5) : Promise.resolve([])
     ]);
     
     // Calculate example transfer for context (this uses adjustments internally)
@@ -335,12 +338,13 @@ async function getRemitContext(userId?: string) {
       receivers,
       adjustments,
       recentRecipients,
+      transactionHistory,
       exampleCalc,
       timestamp: new Date().toISOString() 
     };
   } catch (error) {
     console.error('Failed to fetch remit context:', error);
-    return { rates: {}, receivers: [], adjustments: {}, recentRecipients: [], exampleCalc: null, timestamp: new Date().toISOString() };
+    return { rates: {}, receivers: [], adjustments: {}, recentRecipients: [], transactionHistory: [], exampleCalc: null, timestamp: new Date().toISOString() };
   }
 }
 
@@ -431,6 +435,24 @@ EXAMPLE CALCULATION (10,000 RUB to Rwanda):
 - Recipient receives: ${calc.receiveAmount.toLocaleString()} RWF`;
   }
 
+  // Format transaction history
+  let transactionHistoryText = '';
+  if (context.transactionHistory && context.transactionHistory.length > 0) {
+    const historyList = context.transactionHistory.map((txn, i) => {
+      const statusEmoji = txn.status === 'completed' ? '✅' : txn.status === 'awaiting_confirmation' ? '⏳' : '🔄';
+      const proofNote = txn.adminTransferProofUrl ? ' (has transfer proof)' : '';
+      return `${i+1}. ${statusEmoji} ${txn.amount.toLocaleString()} ${txn.currency} → ${txn.receiveAmount.toLocaleString()} ${txn.receiveCurrency} to ${txn.recipientName}${proofNote}`;
+    }).join('\n');
+    
+    transactionHistoryText = `
+USER'S RECENT TRANSACTIONS:
+${historyList}
+
+If user asks about their transfer status or proof, reference these transactions.
+If transaction has "adminTransferProofUrl", you can tell them the transfer proof is available.
+`;
+  }
+
   return `
 LIVE EXCHANGE RATES (${context.timestamp}):
 ${ratesList || 'Rates temporarily unavailable'}
@@ -440,6 +462,7 @@ PAYMENT RECEIVERS (where users send money to Ikamba):
 ${receiversList || 'Receivers temporarily unavailable'}
 ${exampleText}
 ${recentRecipientsText}
+${transactionHistoryText}
 `;
 }
 
@@ -478,7 +501,7 @@ COUNTRIES: Rwanda +250 RWF MTN | Uganda +256 UGX MTN/Airtel | Kenya +254 KES M-P
 `;
 
 // General AI Identity with Remittance capability
-const IKAMBA_AI_IDENTITY = `You are Ikamba AI - a helpful, knowledgeable assistant that can help with ANY topic.
+const IKAMBA_AI_IDENTITY = `You are a helpful assistant that can help with ANY topic, including money transfers to Africa.
 
 CAPABILITIES:
 - General knowledge, math, science, coding, writing, analysis
@@ -491,17 +514,15 @@ $$
 e^{i\\pi} + 1 = 0
 $$
 - NEVER use \\[ \\] or \\( \\) - only use $ and $$
-- Always escape backslashes in LaTeX: \\cos, \\sin, \\frac, \\pi, etc.
 
 RESPONSE STYLE:
 - Be helpful and conversational
 - Use markdown for formatting (headers, lists, code blocks)
-- For math derivations, show step by step with proper LaTeX
 
 MONEY TRANSFER MODE:
-When user wants to send money (mentions "send money", "transfer", amounts with currencies like RUB/USD to African countries):
-- Switch to remittance assistant mode
+When user wants to send money:
 - Be brief and efficient
+- ALWAYS ask for user's EMAIL for order confirmation
 - Use these tags to render UI boxes:
 
 REMITTANCE TAGS:
@@ -511,15 +532,21 @@ REMITTANCE TAGS:
 [[SUCCESS:orderId:senderName:senderEmail:recipientName:amount:currency:receiveAmount:receiveCurrency]]
 [[RECIPIENTS:name1|phone1|||country1,name2|phone2|||country2]]
 
-REMITTANCE FLOW (when in transfer mode):
+REMITTANCE FLOW:
 1. Amount + country → Show [[TRANSFER:...]], ask "Recipient name?"
 2. Name → "Mobile Money or Bank?"
 3. Method → If Mobile: "Provider? MTN/Airtel/M-Pesa" | If Bank: "Bank name?"
 4. Provider/Bank → "Recipient phone?"
-5. Phone → "Your phone number for updates?"
-6. Sender phone → "Payment method? Sberbank/Cash"
-7. Payment chosen → Show summary, ask "Confirm?"
-8. Confirmed → Call create_transfer_order, show [[PAYMENT:...]] and [[RECIPIENT:...]]
+5. Phone → "Your email for order confirmation?"
+6. Email → "Your phone number?"
+7. Sender phone → "Payment method? Sberbank/Cash"
+8. Payment chosen → Show summary, ask "Confirm?"
+9. Confirmed → Call create_transfer_order, show [[PAYMENT:...]] and [[RECIPIENT:...]]
+
+TRANSACTION STATUS:
+- If user asks about their transfer, check the USER'S RECENT TRANSACTIONS in context
+- If their transaction has "adminTransferProofUrl", tell them the transfer proof is available
+- Guide them to check ikambaremit.com for full details
 
 ${IKAMBA_REMIT_KNOWLEDGE}`;
 

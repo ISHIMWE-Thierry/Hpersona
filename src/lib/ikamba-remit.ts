@@ -2028,6 +2028,59 @@ export async function uploadPaymentProof(
 }
 
 /**
+ * Get user's transaction history (for AI context)
+ */
+export async function getUserTransactionHistory(
+  userId: string, 
+  maxTransactions: number = 5
+): Promise<Array<{
+  id: string;
+  recipientName: string;
+  amount: number;
+  currency: string;
+  receiveAmount: number;
+  receiveCurrency: string;
+  status: string;
+  date: string;
+  hasProof: boolean;
+  adminTransferProofUrl?: string;
+}>> {
+  try {
+    const transactionsRef = collection(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS);
+    const q = query(transactionsRef, orderBy('date', 'desc'), limit(maxTransactions));
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) return [];
+    
+    return snapshot.docs.map(docSnap => {
+      const data = docSnap.data();
+      let dateStr = '';
+      if (data.date?.toDate) {
+        dateStr = data.date.toDate().toISOString();
+      } else if (data.createdAt) {
+        dateStr = data.createdAt;
+      }
+      
+      return {
+        id: docSnap.id,
+        recipientName: data.recipientName || data.recipientsfname || 'Unknown',
+        amount: data.sendAmount || 0,
+        currency: data.fromCurrency || data.basecurrency || 'RUB',
+        receiveAmount: data.receiveAmount || data.recivergets || 0,
+        receiveCurrency: data.toCurrency || data.transfercurrency || 'RWF',
+        status: data.status || data.transactionstatus || 'pending',
+        date: dateStr,
+        hasProof: !!(data.paymentProofUrl || data.paymentProofUrls?.length),
+        adminTransferProofUrl: data.adminTransferProofUrl,
+      };
+    });
+  } catch (error) {
+    console.error('Error getting transaction history:', error);
+    return [];
+  }
+}
+
+/**
  * Get the most recent transaction for a user (for attaching payment proof)
  * Can optionally match by recipient name for accuracy
  */
