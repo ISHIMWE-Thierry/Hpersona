@@ -15,6 +15,11 @@ import {
   getRecentRecipients,
   sendPaymentProofReceivedEmail,
   sendEmailToUser,
+  checkWhatsAppAuth,
+  findUserByEmail,
+  createWhatsAppVerification,
+  verifyWhatsAppCode,
+  sendWhatsAppVerificationEmail,
   CURRENCY_CONFIG,
   COUNTRY_CONFIG 
 } from '@/lib/ikamba-remit';
@@ -64,6 +69,36 @@ const tools: OpenAI.ChatCompletionTool[] = [
           transactionId: { type: 'string', description: 'Transaction ID (optional, will use latest)' },
         },
         required: ['userId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'request_whatsapp_verification',
+      description: 'Call when a WhatsApp user wants to link their account. Sends a verification code to their email.',
+      parameters: {
+        type: 'object',
+        properties: {
+          email: { type: 'string', description: 'User email address to send verification code' },
+          whatsappPhone: { type: 'string', description: 'WhatsApp phone number of the user' },
+        },
+        required: ['email', 'whatsappPhone'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'verify_whatsapp_code',
+      description: 'Verify the 6-digit code sent to email to link WhatsApp account',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: '6-digit verification code from email' },
+          whatsappPhone: { type: 'string', description: 'WhatsApp phone number of the user' },
+        },
+        required: ['code', 'whatsappPhone'],
       },
     },
   },
@@ -251,6 +286,73 @@ async function handleFunctionCall(
     }
   }
   
+  // WhatsApp verification - request code
+  if (name === 'request_whatsapp_verification') {
+    try {
+      const { email, whatsappPhone } = args;
+      
+      // Check if email exists in system
+      const existingUser = await findUserByEmail(email);
+      if (!existingUser) {
+        return JSON.stringify({
+          success: false,
+          error: 'no_account',
+          message: `No account found with email "${email}". Please sign up at ikambaai.com first, then come back to link your WhatsApp.`
+        });
+      }
+      
+      // Create verification code
+      const verification = await createWhatsAppVerification(whatsappPhone, email);
+      if (!verification) {
+        return JSON.stringify({
+          success: false,
+          error: 'Failed to create verification code'
+        });
+      }
+      
+      // Send code via email
+      const emailSent = await sendWhatsAppVerificationEmail(email, verification.code, whatsappPhone);
+      
+      return JSON.stringify({
+        success: true,
+        message: `Verification code sent to ${email}! Check your email and send me the 6-digit code.`,
+        codeExpiry: verification.expiresAt.toISOString(),
+        emailSent
+      });
+    } catch (error) {
+      console.error('Error requesting WhatsApp verification:', error);
+      return JSON.stringify({ success: false, error: 'Verification request failed' });
+    }
+  }
+  
+  // WhatsApp verification - verify code
+  if (name === 'verify_whatsapp_code') {
+    try {
+      const { code, whatsappPhone } = args;
+      
+      const result = await verifyWhatsAppCode(whatsappPhone, code);
+      
+      if (result.success && result.userId) {
+        const profile = await getUserProfile(result.userId);
+        return JSON.stringify({
+          success: true,
+          message: result.message,
+          userId: result.userId,
+          userName: profile?.displayName || profile?.fullName || 'User',
+          userEmail: profile?.email
+        });
+      }
+      
+      return JSON.stringify({
+        success: false,
+        message: result.message
+      });
+    } catch (error) {
+      console.error('Error verifying WhatsApp code:', error);
+      return JSON.stringify({ success: false, error: 'Verification failed' });
+    }
+  }
+  
   return JSON.stringify({ error: 'Unknown function' });
 }
 
@@ -320,15 +422,29 @@ function extractTransferFromVerboseOutput(text: string): {
 }
 
 // Fetch live data for AI context
-async function getRemitContext(userId?: string) {
+async function getRemitContext(userId?: string, whatsappPhone?: string) {
   try {
-    const [rates, receivers, adjustments, recentRecipients, transactionHistory] = await Promise.all([
+    const [rates, receivers, adjustments, recentRecipients, transactionHistory, whatsappAuth] = await Promise.all([
       fetchLiveRatesFromAPI(),
       getActivePaymentReceivers(),
       fetchRateAdjustments(),
       userId ? getRecentRecipients(userId) : Promise.resolve([]),
-      userId ? getUserTransactionHistory(userId, 5) : Promise.resolve([])
+      userId ? getUserTransactionHistory(userId, 5) : Promise.resolve([]),
+      whatsappPhone ? checkWhatsAppAuth(whatsappPhone) : Promise.resolve({ isVerified: false } as { isVerified: boolean; userId?: string; userProfile?: any })
     ]);
+    
+    // If WhatsApp is verified, use the linked userId for data
+    const effectiveUserId = (whatsappAuth.isVerified && whatsappAuth.userId) ? whatsappAuth.userId : userId;
+    
+    // Re-fetch user-specific data with verified userId if different
+    let finalRecipients = recentRecipients;
+    let finalHistory = transactionHistory;
+    if (whatsappAuth.isVerified && whatsappAuth.userId && effectiveUserId !== userId) {
+      [finalRecipients, finalHistory] = await Promise.all([
+        getRecentRecipients(effectiveUserId),
+        getUserTransactionHistory(effectiveUserId, 5)
+      ]);
+    }
     
     // Calculate example transfer for context (this uses adjustments internally)
     const exampleCalc = await calculateTransfer(10000, 'RUB', 'RWF');
@@ -337,20 +453,62 @@ async function getRemitContext(userId?: string) {
       rates, 
       receivers,
       adjustments,
-      recentRecipients,
-      transactionHistory,
+      recentRecipients: finalRecipients,
+      transactionHistory: finalHistory,
       exampleCalc,
+      whatsappAuth,
+      effectiveUserId,
       timestamp: new Date().toISOString() 
     };
   } catch (error) {
     console.error('Failed to fetch remit context:', error);
-    return { rates: {}, receivers: [], adjustments: {}, recentRecipients: [], transactionHistory: [], exampleCalc: null, timestamp: new Date().toISOString() };
+    return { 
+      rates: {}, 
+      receivers: [], 
+      adjustments: {}, 
+      recentRecipients: [], 
+      transactionHistory: [], 
+      exampleCalc: null, 
+      whatsappAuth: { isVerified: false } as { isVerified: boolean; userId?: string; userProfile?: any },
+      effectiveUserId: userId,
+      timestamp: new Date().toISOString() 
+    };
   }
 }
 
 // Build dynamic AI context with real data
-async function buildIkambaContext(userId?: string) {
-  const context = await getRemitContext(userId);
+async function buildIkambaContext(userId?: string, whatsappPhone?: string) {
+  const context = await getRemitContext(userId, whatsappPhone);
+  
+  // WhatsApp auth status text
+  let whatsappAuthText = '';
+  if (whatsappPhone) {
+    if (context.whatsappAuth?.isVerified) {
+      const profile = context.whatsappAuth.userProfile;
+      const name = profile?.displayName || profile?.fullName || 'User';
+      whatsappAuthText = `
+WHATSAPP USER STATUS: ✅ VERIFIED
+- User: ${name}
+- Email: ${profile?.email || 'Not set'}
+- UserId: ${context.effectiveUserId}
+- Can make transfers: YES
+`;
+    } else {
+      whatsappAuthText = `
+WHATSAPP USER STATUS: ❌ NOT VERIFIED
+This WhatsApp user has NOT linked their account yet.
+
+BEFORE they can make a transfer, you MUST:
+1. Ask for their email address
+2. Call request_whatsapp_verification with their email
+3. Have them send you the 6-digit code from their email
+4. Call verify_whatsapp_code to complete verification
+
+DO NOT create orders for unverified WhatsApp users!
+Say: "Eh boss, mbere yo kohereza amafaranga, ukeneye kuza account yawe. Email yawe ni iyihe?"
+`;
+    }
+  }
   
   // Format rates for AI - apply adjustments to main pairs
   const mainPairs = ['RUBRWF', 'RUBUGX', 'RUBKES', 'RUBTZS', 'TRYRWF', 'TRYUGX'];
@@ -463,6 +621,7 @@ ${receiversList || 'Receivers temporarily unavailable'}
 ${exampleText}
 ${recentRecipientsText}
 ${transactionHistoryText}
+${whatsappAuthText}
 `;
 }
 
@@ -587,8 +746,13 @@ export async function POST(req: NextRequest) {
       return new Response('Invalid request body', { status: 400 });
     }
 
-    // Fetch live rates and payment receivers for context
-    const liveContext = await buildIkambaContext(userInfo?.userId);
+    // Extract WhatsApp phone from userInfo if available (WhatsApp users have phone set)
+    const whatsappPhone = userInfo?.phone && userInfo.userId?.startsWith('whatsapp_') 
+      ? userInfo.phone 
+      : undefined;
+
+    // Fetch live rates and payment receivers for context (including WhatsApp auth check)
+    const liveContext = await buildIkambaContext(userInfo?.userId, whatsappPhone);
     
     // Build user context for the AI
     let userContext = '';

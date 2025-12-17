@@ -18,7 +18,8 @@ import {
   limit,
   onSnapshot,
   Timestamp,
-  collectionGroup
+  collectionGroup,
+  serverTimestamp
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
@@ -632,6 +633,285 @@ export async function upsertUserProfile(
     return false;
   }
 }
+
+// ============================================
+// WHATSAPP AUTHENTICATION FUNCTIONS
+// ============================================
+
+// Cache for WhatsApp verified sessions
+const whatsappSessionCache = new Map<string, { userId: string; verified: boolean; timestamp: number }>();
+const WHATSAPP_SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Find user by email address
+ */
+export async function findUserByEmail(email: string): Promise<UserProfile | null> {
+  try {
+    const usersRef = collection(db, COLLECTIONS.USERS);
+    const q = query(usersRef, where('email', '==', email.toLowerCase().trim()), limit(1));
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) {
+      return null;
+    }
+    
+    const userDoc = snapshot.docs[0];
+    const data = userDoc.data();
+    
+    return {
+      id: userDoc.id,
+      email: data.email || null,
+      displayName: data.displayName || data.display_name || null,
+      fullName: data.fullName || data.full_name || data.name || null,
+      firstName: data.firstName || data.first_name,
+      lastName: data.lastName || data.last_name,
+      phoneNumber: data.phoneNumber || data.phone_number || data.phone || null,
+      phone: data.phone,
+      photoURL: data.photoURL || data.photo_url || data.avatarUrl || data.avatar_url || null,
+      avatarUrl: data.avatarUrl || data.avatar_url || data.photoURL || null,
+      avatarColor: data.avatarColor || data.avatar_color,
+      avatarEmoji: data.avatarEmoji || data.avatar_emoji,
+      country: data.country,
+      countryCode: data.countryCode || data.country_code,
+      role: data.role || 'user',
+      kycStatus: data.kycStatus || data.kyc_status || 'none',
+      kycVerified: data.kycVerified || data.kyc_verified || false,
+      preferredCurrency: data.preferredCurrency || data.preferred_currency,
+      language: data.language || data.lang,
+      createdAt: data.createdAt,
+      updatedAt: data.updatedAt,
+      lastLogin: data.lastLogin || data.last_login,
+    };
+  } catch (error) {
+    console.error('Error finding user by email:', error);
+    return null;
+  }
+}
+
+/**
+ * Find user by phone number (checks multiple phone fields)
+ */
+export async function findUserByPhone(phoneNumber: string): Promise<UserProfile | null> {
+  try {
+    // Normalize phone number - remove spaces, dashes
+    const normalizedPhone = phoneNumber.replace(/[\s-]/g, '');
+    const phoneVariants = [
+      normalizedPhone,
+      normalizedPhone.replace('+', ''),
+      '+' + normalizedPhone.replace('+', ''),
+    ];
+    
+    const usersRef = collection(db, COLLECTIONS.USERS);
+    
+    // Try different phone fields
+    for (const variant of phoneVariants) {
+      // Check phoneNumber field
+      let q = query(usersRef, where('phoneNumber', '==', variant), limit(1));
+      let snapshot = await getDocs(q);
+      if (!snapshot.empty) {
+        return getUserProfile(snapshot.docs[0].id);
+      }
+      
+      // Check phone field
+      q = query(usersRef, where('phone', '==', variant), limit(1));
+      snapshot = await getDocs(q);
+      if (!snapshot.empty) {
+        return getUserProfile(snapshot.docs[0].id);
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Error finding user by phone:', error);
+    return null;
+  }
+}
+
+/**
+ * Generate a 6-digit verification code
+ */
+function generateVerificationCode(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+/**
+ * Store verification code for WhatsApp user
+ */
+export async function createWhatsAppVerification(
+  whatsappPhone: string, 
+  email: string
+): Promise<{ code: string; expiresAt: Date } | null> {
+  try {
+    const code = generateVerificationCode();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    
+    const verificationRef = doc(db, 'whatsappVerifications', whatsappPhone);
+    await setDoc(verificationRef, {
+      code,
+      email: email.toLowerCase().trim(),
+      whatsappPhone,
+      createdAt: serverTimestamp(),
+      expiresAt: expiresAt.toISOString(),
+      verified: false,
+    });
+    
+    return { code, expiresAt };
+  } catch (error) {
+    console.error('Error creating WhatsApp verification:', error);
+    return null;
+  }
+}
+
+/**
+ * Verify WhatsApp code and link to user account
+ */
+export async function verifyWhatsAppCode(
+  whatsappPhone: string, 
+  code: string
+): Promise<{ success: boolean; userId?: string; message: string }> {
+  try {
+    const verificationRef = doc(db, 'whatsappVerifications', whatsappPhone);
+    const verificationDoc = await getDoc(verificationRef);
+    
+    if (!verificationDoc.exists()) {
+      return { success: false, message: 'No verification pending. Please request a new code.' };
+    }
+    
+    const data = verificationDoc.data();
+    
+    // Check if expired
+    if (new Date(data.expiresAt) < new Date()) {
+      return { success: false, message: 'Code expired. Please request a new code.' };
+    }
+    
+    // Check if code matches
+    if (data.code !== code) {
+      return { success: false, message: 'Invalid code. Please try again.' };
+    }
+    
+    // Find user by email
+    const user = await findUserByEmail(data.email);
+    if (!user) {
+      return { success: false, message: 'Account not found. Please sign up on ikambaai.com first.' };
+    }
+    
+    // Update user profile with WhatsApp phone
+    const userRef = doc(db, COLLECTIONS.USERS, user.id);
+    await updateDoc(userRef, {
+      whatsappPhone: whatsappPhone,
+      whatsappVerified: true,
+      whatsappVerifiedAt: serverTimestamp(),
+    });
+    
+    // Mark verification as completed
+    await updateDoc(verificationRef, {
+      verified: true,
+      verifiedAt: serverTimestamp(),
+      linkedUserId: user.id,
+    });
+    
+    // Cache the session
+    whatsappSessionCache.set(whatsappPhone, {
+      userId: user.id,
+      verified: true,
+      timestamp: Date.now(),
+    });
+    
+    return { success: true, userId: user.id, message: 'Verified! You can now make transfers.' };
+  } catch (error) {
+    console.error('Error verifying WhatsApp code:', error);
+    return { success: false, message: 'Verification failed. Please try again.' };
+  }
+}
+
+/**
+ * Check if WhatsApp user is verified/authenticated
+ */
+export async function checkWhatsAppAuth(whatsappPhone: string): Promise<{
+  isVerified: boolean;
+  userId?: string;
+  userProfile?: UserProfile | null;
+}> {
+  try {
+    // Check cache first
+    const cached = whatsappSessionCache.get(whatsappPhone);
+    if (cached && cached.verified && Date.now() - cached.timestamp < WHATSAPP_SESSION_TTL) {
+      const profile = await getUserProfile(cached.userId);
+      return { isVerified: true, userId: cached.userId, userProfile: profile };
+    }
+    
+    // Check if phone is linked to any user
+    const usersRef = collection(db, COLLECTIONS.USERS);
+    const q = query(
+      usersRef, 
+      where('whatsappPhone', '==', whatsappPhone),
+      where('whatsappVerified', '==', true),
+      limit(1)
+    );
+    const snapshot = await getDocs(q);
+    
+    if (!snapshot.empty) {
+      const userDoc = snapshot.docs[0];
+      const profile = await getUserProfile(userDoc.id);
+      
+      // Cache the session
+      whatsappSessionCache.set(whatsappPhone, {
+        userId: userDoc.id,
+        verified: true,
+        timestamp: Date.now(),
+      });
+      
+      return { isVerified: true, userId: userDoc.id, userProfile: profile };
+    }
+    
+    return { isVerified: false };
+  } catch (error) {
+    console.error('Error checking WhatsApp auth:', error);
+    return { isVerified: false };
+  }
+}
+
+/**
+ * Send verification code email for WhatsApp linking
+ */
+export async function sendWhatsAppVerificationEmail(
+  email: string,
+  code: string,
+  whatsappPhone: string
+): Promise<boolean> {
+  try {
+    const htmlBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #25D366;">🔐 WhatsApp Verification</h2>
+        <p>You're linking your WhatsApp (${whatsappPhone}) to your Ikamba account.</p>
+        <div style="background: #f0f0f0; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
+          <span style="font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #128C7E;">${code}</span>
+        </div>
+        <p>Send this code to our WhatsApp bot to complete verification.</p>
+        <p style="color: #666; font-size: 12px;">This code expires in 10 minutes. If you didn't request this, ignore this email.</p>
+      </div>
+    `;
+    
+    const response = await fetch(USER_EMAIL_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: email,
+        subject: `🔐 Your Ikamba WhatsApp Verification Code: ${code}`,
+        body: htmlBody,
+      }),
+    });
+    
+    return response.ok;
+  } catch (error) {
+    console.error('Error sending WhatsApp verification email:', error);
+    return false;
+  }
+}
+
+// ============================================
+// SENDER DETAILS EXTRACTION
+// ============================================
 
 /**
  * Extract sender details from user profile for order creation
