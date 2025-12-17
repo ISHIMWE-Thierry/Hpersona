@@ -526,7 +526,7 @@ ${IKAMBA_REMIT_KNOWLEDGE}`;
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages, mode = 'gpt', userInfo } = await req.json();
+    const { messages, mode = 'gpt', userInfo, systemHint } = await req.json();
 
     if (!messages || !Array.isArray(messages)) {
       return new Response('Invalid request body', { status: 400 });
@@ -541,6 +541,9 @@ export async function POST(req: NextRequest) {
       userContext = `\n\nLOGGED IN USER:\n- User ID: ${userInfo.userId}\n- Email: ${userInfo.email || 'not set'}\n- Name: ${userInfo.displayName || 'not set'}\n\nWhen creating orders, use this user's ID and email.`;
     }
     
+    // Add custom system hint if provided (e.g., WhatsApp style instructions)
+    const customHint = systemHint ? `\n\n--- SPECIAL INSTRUCTIONS ---\n${systemHint}\n---\n` : '';
+    
     // Choose system prompt based on mode and inject live data
     const basePrompt = mode === 'thinking' 
       ? ADVANCED_THINKING_PROMPT
@@ -550,7 +553,7 @@ export async function POST(req: NextRequest) {
 
 --- LIVE DATA ---
 ${liveContext}
----${userContext}
+---${userContext}${customHint}
 
 NEVER DUPLICATE TEXT. Say each thing ONCE only.
 When user confirms, call create_transfer_order function.`;
