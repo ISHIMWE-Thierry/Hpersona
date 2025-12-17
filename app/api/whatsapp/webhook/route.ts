@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// WhatsApp Cloud API Configuration
-const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
-const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
-const WEBHOOK_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'ikamba_verify_token';
+// Hardcode the verify token for reliability
+const WEBHOOK_VERIFY_TOKEN = 'ikamba_verify_token';
+
+// Get config at runtime to ensure env vars are loaded
+function getConfig() {
+  return {
+    token: process.env.WHATSAPP_ACCESS_TOKEN || '',
+    phoneId: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
+    appUrl: process.env.NEXT_PUBLIC_APP_URL || 'https://hpersona.vercel.app',
+  };
+}
 
 // Store conversation context (in production, use Redis or database)
 const conversationContexts = new Map<string, any[]>();
@@ -15,11 +22,22 @@ export async function GET(req: NextRequest) {
   const token = searchParams.get('hub.verify_token');
   const challenge = searchParams.get('hub.challenge');
 
+  console.log('WhatsApp webhook verification attempt:', { mode, token, challenge });
+
+  // Check if this is a verification request
   if (mode === 'subscribe' && token === WEBHOOK_VERIFY_TOKEN) {
-    console.log('WhatsApp webhook verified');
-    return new NextResponse(challenge, { status: 200 });
+    console.log('WhatsApp webhook verified successfully');
+    // Return challenge as plain text
+    return new Response(challenge || '', { 
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' }
+    });
   }
 
+  console.log('WhatsApp webhook verification failed:', { 
+    expectedToken: WEBHOOK_VERIFY_TOKEN, 
+    receivedToken: token 
+  });
   return new NextResponse('Forbidden', { status: 403 });
 }
 
@@ -119,7 +137,10 @@ async function callIkambaAI(messages: any[], userId: string): Promise<{
   transferSummary?: any;
 }> {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://hpersona.vercel.app';
+    const config = getConfig();
+    const baseUrl = config.appUrl;
+    
+    console.log('Calling Ikamba AI at:', `${baseUrl}/api/chat`);
     
     const response = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
@@ -255,11 +276,12 @@ function parseAIResponse(text: string): {
 // Get media URL from WhatsApp
 async function getMediaUrl(mediaId: string): Promise<string> {
   try {
+    const config = getConfig();
     const response = await fetch(
-      `https://graph.facebook.com/v18.0/${mediaId}`,
+      `https://graph.facebook.com/v22.0/${mediaId}`,
       {
         headers: {
-          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          Authorization: `Bearer ${config.token}`,
         },
       }
     );
@@ -341,13 +363,19 @@ async function sendWhatsAppMessage(to: string, response: {
 
 // Send text message via WhatsApp API
 async function sendTextMessage(to: string, text: string) {
+  const config = getConfig();
+  
+  console.log('Sending WhatsApp message to:', to);
+  console.log('Using phone ID:', config.phoneId);
+  console.log('Token exists:', !!config.token);
+  
   try {
-    await fetch(
-      `https://graph.facebook.com/v18.0/${WHATSAPP_PHONE_ID}/messages`,
+    const response = await fetch(
+      `https://graph.facebook.com/v22.0/${config.phoneId}/messages`,
       {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          Authorization: `Bearer ${config.token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -362,6 +390,13 @@ async function sendTextMessage(to: string, text: string) {
         }),
       }
     );
+    
+    const result = await response.json();
+    console.log('WhatsApp API response:', result);
+    
+    if (!response.ok) {
+      console.error('WhatsApp API error:', result);
+    }
   } catch (error) {
     console.error('Error sending WhatsApp message:', error);
   }
@@ -369,13 +404,15 @@ async function sendTextMessage(to: string, text: string) {
 
 // Send interactive message (buttons/lists)
 async function sendInteractiveMessage(to: string, interactive: any) {
+  const config = getConfig();
+  
   try {
-    await fetch(
-      `https://graph.facebook.com/v18.0/${WHATSAPP_PHONE_ID}/messages`,
+    const response = await fetch(
+      `https://graph.facebook.com/v22.0/${config.phoneId}/messages`,
       {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          Authorization: `Bearer ${config.token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -387,6 +424,9 @@ async function sendInteractiveMessage(to: string, interactive: any) {
         }),
       }
     );
+    
+    const result = await response.json();
+    console.log('WhatsApp interactive API response:', result);
   } catch (error) {
     console.error('Error sending interactive message:', error);
   }

@@ -1055,11 +1055,27 @@ export async function calculateTransfer(
   
   const fees = calculateFee(sendAmount, fromCurrency, toCurrency);
   
-  // Fee is DEDUCTED from send amount: netAmount = sendAmount - fee
-  // receiveAmount = netAmount × rate
-  const netAmount = sendAmount - fees.fixedFee;
-  const receiveAmount = netAmount * rateInfo.adjustedRate;
-  const totalAmount = sendAmount; // User pays the full sendAmount, fee is deducted internally
+  // Different calculation for RWF → RUB (reverse corridor)
+  // Normal: Fee deducted from send amount, then multiply by rate
+  // Reverse (to RUB): No send fee, multiply by rate, then deduct payout fee from receive
+  
+  let netAmount: number;
+  let receiveAmount: number;
+  
+  if (toCurrency.toUpperCase() === 'RUB' && fromCurrency.toUpperCase() !== 'RUB') {
+    // RWF → RUB: No send fee, payout fee deducted from receive
+    netAmount = sendAmount; // No fee on send side
+    const rawReceive = netAmount * rateInfo.adjustedRate;
+    receiveAmount = rawReceive - fees.payoutFee; // Deduct 100 RUB payout fee
+    console.log(`[calculateTransfer] RWF→RUB: send=${sendAmount}, raw=${rawReceive}, payoutFee=${fees.payoutFee}, receive=${receiveAmount}`);
+  } else {
+    // Normal: RUB → RWF and other corridors
+    netAmount = sendAmount - fees.fixedFee;
+    receiveAmount = netAmount * rateInfo.adjustedRate;
+    console.log(`[calculateTransfer] Normal: send=${sendAmount}, fee=${fees.fixedFee}, net=${netAmount}, receive=${receiveAmount}`);
+  }
+  
+  const totalAmount = sendAmount; // User pays the full sendAmount
   
   // Round based on currency decimal places
   const roundedReceive = toInfo.decimalPlaces === 0 

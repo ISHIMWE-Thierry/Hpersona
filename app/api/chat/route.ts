@@ -420,9 +420,33 @@ ${recentRecipientsText}
 // Ikamba Remit Knowledge Base - Concise version
 const IKAMBA_REMIT_KNOWLEDGE = `
 CORRIDORS: RUB/TRY to RWF, UGX, KES, TZS, BIF, NGN, ETB, XOF, ZAR
-FEES: RUB = 100 RUB fixed. Others = 0.
+           RWF to RUB (reverse corridor available)
+
+FEE STRUCTURE:
+- RUB → Africa: 100 RUB fixed fee (deducted from send amount before conversion)
+- RWF → RUB: NO fixed fee, BUT 100 RUB payout fee (deducted from receive amount AFTER conversion)
+- Other corridors: 0 fees
+
+CALCULATION FORMULAS:
+1. RUB → RWF (normal):
+   Fee = 100 RUB
+   Net = sendAmount - 100
+   Receive = Net × rate
+   Example: 10,000 RUB → RWF at rate 14.5
+   Net = 10,000 - 100 = 9,900 RUB
+   Receive = 9,900 × 14.5 = 143,550 RWF
+
+2. RWF → RUB (reverse - DIFFERENT!):
+   Fee = 0 RWF (no send fee)
+   Raw = sendAmount × rate
+   Payout Fee = 100 RUB (deducted from receive)
+   Receive = Raw - 100 RUB
+   Example: 100,000 RWF → RUB at rate 0.069 (1 RWF = 0.069 RUB)
+   Raw = 100,000 × 0.069 = 6,900 RUB
+   Receive = 6,900 - 100 = 6,800 RUB
+
 DELIVERY: Mobile Money (5-30 min), Bank (1-3 days)
-COUNTRIES: Rwanda +250 RWF MTN | Uganda +256 UGX MTN/Airtel | Kenya +254 KES M-Pesa | Tanzania +255 TZS M-Pesa
+COUNTRIES: Rwanda +250 RWF MTN | Uganda +256 UGX MTN/Airtel | Kenya +254 KES M-Pesa | Tanzania +255 TZS M-Pesa | Russia +7 RUB Bank
 `;
 
 // General AI Identity with Remittance capability
