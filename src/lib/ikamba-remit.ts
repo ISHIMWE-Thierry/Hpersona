@@ -349,7 +349,7 @@ async function sendEmail(to: string, subject: string, textMessage: string, htmlM
 }
 
 /**
- * Send receipt email to user via Postmark Cloud Function
+ * Send receipt email to user via Firebase mail collection
  */
 export async function sendEmailToUser(transactionData: TransactionEmailData): Promise<boolean> {
   try {
@@ -358,34 +358,36 @@ export async function sendEmailToUser(transactionData: TransactionEmailData): Pr
       return false;
     }
 
-    const appDatav2 = {
-      senderemail: transactionData.senderEmail,
-      sendername: transactionData.senderName,
-      sendertel: transactionData.senderTel,
-      amounttopay: transactionData.amountToPay,
-      basecurrency: transactionData.baseCurrency,
-      transfercurrency: transactionData.transferCurrency,
-      recivergets: transactionData.receiverGets,
-      recipientsfname: transactionData.recipientName,
-    };
+    const subject = `✅ Transfer Order Received - ${transactionData.baseCurrency} to ${transactionData.transferCurrency}`;
+    const textMessage = `Your transfer order has been received. Amount: ${transactionData.amountToPay} ${transactionData.baseCurrency}. Recipient: ${transactionData.recipientName} will receive ${transactionData.receiverGets} ${transactionData.transferCurrency}.`;
+    
+    const htmlMessage = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #10b981;">✅ Transfer Order Received</h2>
+        <p>Hi ${transactionData.senderName},</p>
+        <p>Your transfer order has been received and is being processed.</p>
+        
+        <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <h3 style="margin-top: 0; color: #374151;">Order Details</h3>
+          <p><strong>Amount to Pay:</strong> ${transactionData.amountToPay} ${transactionData.baseCurrency}</p>
+          <p><strong>Fee:</strong> ${transactionData.fee}</p>
+          <p><strong>Recipient:</strong> ${transactionData.recipientName}</p>
+          <p><strong>Recipient Phone:</strong> ${transactionData.recipientsPhone}</p>
+          <p><strong>Amount to Receive:</strong> ${transactionData.receiverGets} ${transactionData.transferCurrency}</p>
+          <p><strong>Delivery Method:</strong> ${transactionData.transfermethod}</p>
+          <p><strong>Exchange Rate:</strong> ${transactionData.rateUsed}</p>
+        </div>
+        
+        <p>Once we confirm your payment, we'll process the transfer immediately.</p>
+        <p style="color: #666; font-size: 12px;">Thank you for using Ikamba Remit!</p>
+      </div>
+    `;
 
-    const response = await fetch(USER_EMAIL_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        recipientName: transactionData.recipientName,
-        senderCurrency: transactionData.baseCurrency,
-        appDatav2,
-      }),
-    });
-
-    if (!response.ok) {
-      console.error('Error from User Email Cloud Function:', response.status);
-      return false;
-    }
-
-    console.log('User receipt email sent successfully');
-    return true;
+    // Use Firebase mail collection (processed by Trigger Email extension)
+    const emailId = await sendEmail(transactionData.senderEmail, subject, textMessage, htmlMessage);
+    
+    console.log('User receipt email queued with ID:', emailId);
+    return emailId !== null;
   } catch (error) {
     console.error('Error sending user receipt email:', error);
     return false;
@@ -894,28 +896,15 @@ export async function sendWhatsAppVerificationEmail(
       </div>
     `;
     
-    const requestBody = {
-      to: email,
-      subject: `🔐 Your Ikamba WhatsApp Verification Code: ${code}`,
-      body: htmlBody,
-    };
+    const subject = `🔐 Your Ikamba WhatsApp Verification Code: ${code}`;
+    const textMessage = `Your WhatsApp verification code is: ${code}. This code expires in 10 minutes.`;
     
-    console.log('[sendWhatsAppVerificationEmail] Request body:', JSON.stringify(requestBody, null, 2));
+    // Use Firebase mail collection (processed by Trigger Email extension)
+    const emailId = await sendEmail(email, subject, textMessage, htmlBody);
     
-    const response = await fetch(USER_EMAIL_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
-    });
+    console.log('[sendWhatsAppVerificationEmail] Email queued with ID:', emailId);
     
-    console.log('[sendWhatsAppVerificationEmail] Response status:', response.status);
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[sendWhatsAppVerificationEmail] Error response:', errorText);
-    }
-    
-    return response.ok;
+    return emailId !== null;
   } catch (error) {
     console.error('[sendWhatsAppVerificationEmail] Error:', error);
     return false;
