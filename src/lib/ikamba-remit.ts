@@ -880,6 +880,8 @@ export async function sendWhatsAppVerificationEmail(
   whatsappPhone: string
 ): Promise<boolean> {
   try {
+    console.log('[sendWhatsAppVerificationEmail] Sending to:', email, 'Code:', code);
+    
     const htmlBody = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #25D366;">🔐 WhatsApp Verification</h2>
@@ -892,19 +894,30 @@ export async function sendWhatsAppVerificationEmail(
       </div>
     `;
     
+    const requestBody = {
+      to: email,
+      subject: `🔐 Your Ikamba WhatsApp Verification Code: ${code}`,
+      body: htmlBody,
+    };
+    
+    console.log('[sendWhatsAppVerificationEmail] Request body:', JSON.stringify(requestBody, null, 2));
+    
     const response = await fetch(USER_EMAIL_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to: email,
-        subject: `🔐 Your Ikamba WhatsApp Verification Code: ${code}`,
-        body: htmlBody,
-      }),
+      body: JSON.stringify(requestBody),
     });
+    
+    console.log('[sendWhatsAppVerificationEmail] Response status:', response.status);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[sendWhatsAppVerificationEmail] Error response:', errorText);
+    }
     
     return response.ok;
   } catch (error) {
-    console.error('Error sending WhatsApp verification email:', error);
+    console.error('[sendWhatsAppVerificationEmail] Error:', error);
     return false;
   }
 }

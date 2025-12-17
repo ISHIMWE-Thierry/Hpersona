@@ -290,9 +290,12 @@ async function handleFunctionCall(
   if (name === 'request_whatsapp_verification') {
     try {
       const { email, whatsappPhone } = args;
+      console.log('[WhatsApp Verification] Request received:', { email, whatsappPhone });
       
       // Check if email exists in system
       const existingUser = await findUserByEmail(email);
+      console.log('[WhatsApp Verification] User lookup result:', existingUser ? 'Found' : 'Not found');
+      
       if (!existingUser) {
         return JSON.stringify({
           success: false,
@@ -303,6 +306,8 @@ async function handleFunctionCall(
       
       // Create verification code
       const verification = await createWhatsAppVerification(whatsappPhone, email);
+      console.log('[WhatsApp Verification] Code created:', verification ? 'Success' : 'Failed');
+      
       if (!verification) {
         return JSON.stringify({
           success: false,
@@ -311,7 +316,9 @@ async function handleFunctionCall(
       }
       
       // Send code via email
+      console.log('[WhatsApp Verification] Sending email to:', email);
       const emailSent = await sendWhatsAppVerificationEmail(email, verification.code, whatsappPhone);
+      console.log('[WhatsApp Verification] Email sent result:', emailSent);
       
       return JSON.stringify({
         success: true,
