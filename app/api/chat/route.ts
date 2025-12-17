@@ -365,6 +365,29 @@ async function buildIkambaContext(userId?: string) {
     })
     .join('\n');
   
+  // Add reverse corridor rates (Africa to RUB)
+  const reverseCorridors: string[] = [];
+  const africaCurrencies = ['RWF', 'UGX', 'KES'];
+  for (const currency of africaCurrencies) {
+    const forwardKey = `RUB${currency}`;
+    const forwardRate = context.rates[forwardKey];
+    if (forwardRate !== undefined) {
+      const parsed = typeof forwardRate === 'number' ? forwardRate : parseFloat(forwardRate as string);
+      if (!isNaN(parsed) && parsed > 0) {
+        // Calculate reverse rate
+        const reverseBaseRate = 1 / parsed;
+        const reversePairKey = `${currency}_RUB`;
+        const reverseAdjustment = context.adjustments[reversePairKey] || 0;
+        const adjustedReverseRate = (reverseBaseRate + reverseAdjustment) * 1.02;
+        reverseCorridors.push(`1 ${currency} = ${adjustedReverseRate.toFixed(6)} RUB`);
+      }
+    }
+  }
+  
+  const reverseRatesList = reverseCorridors.length > 0 
+    ? `\nREVERSE CORRIDORS (Africa to Russia):\n${reverseCorridors.join('\n')}`
+    : '';
+  
   // Format receivers for AI
   const receiversList = context.receivers
     .map(r => `${r.currency}: ${r.provider || r.name} - ${r.accountNumber} (${r.accountHolder})`)
@@ -411,6 +434,7 @@ EXAMPLE CALCULATION (10,000 RUB to Rwanda):
   return `
 LIVE EXCHANGE RATES (${context.timestamp}):
 ${ratesList || 'Rates temporarily unavailable'}
+${reverseRatesList}
 
 PAYMENT RECEIVERS (where users send money to Ikamba):
 ${receiversList || 'Receivers temporarily unavailable'}
@@ -421,12 +445,14 @@ ${recentRecipientsText}
 
 // Ikamba Remit Knowledge Base - Concise version
 const IKAMBA_REMIT_KNOWLEDGE = `
-CORRIDORS: RUB/TRY to RWF, UGX, KES, TZS, BIF, NGN, ETB, XOF, ZAR
-           RWF to RUB (reverse corridor available)
+CORRIDORS: 
+- Russia to Africa: RUB to RWF, UGX, KES, TZS, BIF, NGN, ETB, XOF, ZAR, SLE
+- Turkey to Africa: TRY to RWF, UGX, KES
+- Africa to Russia: RWF, UGX, KES to RUB (reverse corridors)
 
 FEE STRUCTURE:
 - RUB → Africa: 100 RUB fixed fee (deducted from send amount before conversion)
-- RWF → RUB: NO fixed fee, BUT 100 RUB payout fee (deducted from receive amount AFTER conversion)
+- Africa → RUB (RWF/UGX/KES → RUB): NO fixed fee, BUT 100 RUB payout fee (deducted from receive amount AFTER conversion)
 - Other corridors: 0 fees
 
 CALCULATION FORMULAS:
@@ -438,14 +464,14 @@ CALCULATION FORMULAS:
    Net = 10,000 - 100 = 9,900 RUB
    Receive = 9,900 × 14.5 = 143,550 RWF
 
-2. RWF → RUB (reverse - DIFFERENT!):
-   Fee = 0 RWF (no send fee)
+2. RWF/UGX/KES → RUB (reverse - DIFFERENT!):
+   Fee = 0 (no send fee)
    Raw = sendAmount × rate
    Payout Fee = 100 RUB (deducted from receive)
    Receive = Raw - 100 RUB
-   Example: 100,000 RWF → RUB at rate 0.069 (1 RWF = 0.069 RUB)
-   Raw = 100,000 × 0.069 = 6,900 RUB
-   Receive = 6,900 - 100 = 6,800 RUB
+   Example: 100,000 RWF → RUB at rate 0.065
+   Raw = 100,000 × 0.065 = 6,500 RUB
+   Receive = 6,500 - 100 = 6,400 RUB
 
 DELIVERY: Mobile Money (5-30 min), Bank (1-3 days)
 COUNTRIES: Rwanda +250 RWF MTN | Uganda +256 UGX MTN/Airtel | Kenya +254 KES M-Pesa | Tanzania +255 TZS M-Pesa | Russia +7 RUB Bank
