@@ -71,7 +71,7 @@ const tools: OpenAI.ChatCompletionTool[] = [
 async function handleFunctionCall(
   name: string, 
   args: any, 
-  userInfo?: { userId: string; email: string; displayName: string },
+  userInfo?: { userId: string; email: string; displayName: string; phone?: string },
   imageData?: string
 ): Promise<string> {
   if (name === 'create_transfer_order') {
@@ -80,12 +80,14 @@ async function handleFunctionCall(
       const userId = userInfo?.userId || args.userId || 'guest';
       const senderEmail = userInfo?.email || args.senderEmail || '';
       const senderName = args.senderName || userInfo?.displayName || 'Guest';
+      // Use phone from userInfo (WhatsApp users) or from AI args
+      const senderPhone = args.senderPhone || userInfo?.phone || '';
       
       const result = await createTransferOrder({
         userId,
         senderName,
         senderEmail,
-        senderPhone: args.senderPhone || '',
+        senderPhone,
         recipientName: args.recipientName,
         recipientPhone: args.recipientPhone,
         recipientAccountNumber: args.recipientAccountNumber || '',
