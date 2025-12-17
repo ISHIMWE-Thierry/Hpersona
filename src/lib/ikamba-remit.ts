@@ -760,9 +760,23 @@ export async function getExchangeRates(): Promise<ExchangeRate[]> {
       if (!CURRENCY_CONFIG[from] || !CURRENCY_CONFIG[to]) continue;
       
       const pair = `${from}_${to}`;
-      const adjustment = adjustments[pair] || 0;
+      const reversePair = `${to}_${from}`;
       const midMarketRate = value;
-      const adjustedMid = midMarketRate + adjustment;
+      
+      // Apply adjustment following blink-1 logic
+      const directAdjustment = adjustments[pair];
+      const reverseAdjustment = adjustments[reversePair];
+      
+      let adjustedMid = midMarketRate;
+      
+      if (typeof directAdjustment === 'number' && directAdjustment !== 0) {
+        adjustedMid = Math.max(midMarketRate + directAdjustment, 0.000001);
+      } else if (typeof reverseAdjustment === 'number' && reverseAdjustment !== 0) {
+        // Reverse: invert, add adjustment, invert back
+        const invertedRate = Math.max(1 / midMarketRate, 0.000001);
+        const adjustedInverted = Math.max(invertedRate + reverseAdjustment, 0.000001);
+        adjustedMid = Math.max(1 / adjustedInverted, 0.000001);
+      }
       
       rates.push({
         id: pair,
@@ -836,14 +850,29 @@ export async function getExchangeRate(from: string, to: string): Promise<{
       return null;
     }
     
-    // Apply adjustment from Firestore (key format: RUB_RWF)
-    const adjustment = adjustments[pair] || 0;
-    const adjustedMid = midMarketRate + adjustment;
-    const customerRate = adjustedMid * (1 + FEE_CONFIG.DEFAULT_MARGIN);
+    // Apply adjustment from Firestore (key format: RUB_RWF or RWF_RUB)
+    // Following blink-1 logic: try direct adjustment first, then reverse
+    const directAdjustment = adjustments[pair];
+    const reverseAdjustment = adjustments[`${cleanTo}_${cleanFrom}`];
     
-    if (adjustment !== 0) {
-      console.log(`Applied adjustment for ${pair}: ${adjustment} (mid: ${midMarketRate} -> ${adjustedMid})`);
+    let adjustedMid = midMarketRate;
+    let appliedAdjustment = 0;
+    
+    if (typeof directAdjustment === 'number' && directAdjustment !== 0) {
+      // Direct adjustment: simply add to mid-market rate
+      adjustedMid = Math.max(midMarketRate + directAdjustment, 0.000001);
+      appliedAdjustment = directAdjustment;
+      console.log(`Applied direct adjustment for ${pair}: ${directAdjustment} (mid: ${midMarketRate} -> ${adjustedMid})`);
+    } else if (typeof reverseAdjustment === 'number' && reverseAdjustment !== 0) {
+      // Reverse adjustment: invert rate, add adjustment, invert back (blink-1 logic)
+      const invertedRate = Math.max(1 / midMarketRate, 0.000001);
+      const adjustedInverted = Math.max(invertedRate + reverseAdjustment, 0.000001);
+      adjustedMid = Math.max(1 / adjustedInverted, 0.000001);
+      appliedAdjustment = reverseAdjustment;
+      console.log(`Applied reverse adjustment for ${pair}: ${reverseAdjustment} (inverted: ${invertedRate} -> ${adjustedInverted}, mid: ${midMarketRate} -> ${adjustedMid})`);
     }
+    
+    const customerRate = adjustedMid * (1 + FEE_CONFIG.DEFAULT_MARGIN);
     
     return {
       rate: customerRate,
@@ -851,7 +880,7 @@ export async function getExchangeRate(from: string, to: string): Promise<{
       customerRate,
       adjustedRate: customerRate,
       margin: FEE_CONFIG.DEFAULT_MARGIN,
-      adjustment,
+      adjustment: appliedAdjustment,
     };
   } catch (error) {
     console.error('Error fetching exchange rate:', error);
