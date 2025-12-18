@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, X, Brain, Zap, Plus, DollarSign } from 'lucide-react';
+import { Send, Loader2, X, Brain, Zap, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Message } from '@/types/chat';
@@ -17,13 +17,12 @@ interface ChatInterfaceProps {
   onSendMessage: (content: string, images?: string[], mode?: ChatMode) => void;
 }
 
-// Quick action suggestions - general AI + money transfer
-const QUICK_ACTIONS = [
-  { label: '💰 Send money to Rwanda', action: 'I want to send money to Rwanda' },
-  { label: '💱 Check exchange rates', action: 'What are the current exchange rates?' },
-  { label: '📐 Explain a math concept', action: 'Explain Euler\'s formula with derivation' },
-  { label: '💻 Help me code', action: 'Help me write a Python function' },
-];
+// Ikamba Logo SVG Component
+const IkambaLogo = ({ className }: { className?: string }) => (
+  <svg className={className} width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path fillRule="evenodd" clipRule="evenodd" d="M18.3279 33.2066C19.157 32.2118 20.3851 31.6365 21.6802 31.6365H39.2727C44.0927 31.6365 48 27.7292 48 22.9093V18.5456C48 13.7257 44.0927 9.81836 39.2727 9.81836H35.862C34.567 9.81836 33.3388 10.3936 32.5098 11.3885L29.6721 14.7937C28.843 15.7886 27.6149 16.3638 26.3198 16.3638H8.72727C3.90733 16.3638 0 20.2711 0 25.0911V29.4547C0 34.2747 3.90733 38.182 8.72727 38.182H12.138C13.433 38.182 14.6612 37.6068 15.4902 36.612L18.3279 33.2066ZM41.4545 18.5456C41.4545 17.3406 40.4777 16.3638 39.2727 16.3638H32.5893C31.2942 16.3638 30.0661 16.939 29.237 17.9339L26.3993 21.3392C25.5703 22.334 24.3421 22.9093 23.0471 22.9093H8.72727C7.52229 22.9093 6.54545 23.8861 6.54545 25.0911V29.4547C6.54545 30.6596 7.52229 31.6365 8.72727 31.6365H15.4107C16.7058 31.6365 17.9339 31.0612 18.763 30.0664L21.6007 26.6611C22.4297 25.6663 23.6579 25.0911 24.9529 25.0911H39.2727C40.4777 25.0911 41.4545 24.1142 41.4545 22.9093V18.5456Z" fill="currentColor"/>
+  </svg>
+);
 
 export function ChatInterface({ messages, isStreaming, onSendMessage }: ChatInterfaceProps) {
   const [input, setInput] = useState('');
@@ -118,38 +117,17 @@ ${orderData.deliveryMethod === 'mobile_money'
     onSendMessage(value, [], mode);
   };
 
-  // Handle quick action click
-  const handleQuickAction = (action: string) => {
-    onSendMessage(action, [], mode);
-  };
-
-  // Empty state - centered welcome
+  // Empty state - clean minimal welcome
   if (messages.length === 0) {
     return (
       <div className="flex flex-col h-full min-h-[400px] sm:min-h-[480px] items-center justify-center px-3 sm:px-4 safe-area-inset">
         <div className="w-full max-w-2xl mx-auto">
-          {/* Welcome Header - Mobile optimized */}
-          <div className="text-center mb-6 sm:mb-8">
-            <div className="inline-flex items-center justify-center p-3 rounded-2xl bg-primary/10 mb-3">
-              <Brain className="h-8 w-8 sm:h-10 sm:w-10 text-primary" />
-            </div>
-            <h1 className="text-2xl sm:text-3xl font-bold mb-2">Ikamba AI</h1>
-            <p className="text-muted-foreground text-xs sm:text-sm px-4">
-              Your intelligent assistant for anything - math, coding, writing, and instant money transfers to Africa.
+          {/* Welcome Header - Professional logo without background */}
+          <div className="text-center mb-8">
+            <IkambaLogo className="h-16 w-16 sm:h-20 sm:w-20 text-primary mx-auto mb-4" />
+            <p className="text-muted-foreground text-sm">
+              How can I help you today?
             </p>
-          </div>
-
-          {/* Quick Actions - Mobile friendly grid */}
-          <div className="grid grid-cols-2 gap-2 mb-4 px-2">
-            {QUICK_ACTIONS.map((item) => (
-              <button
-                key={item.action}
-                onClick={() => handleQuickAction(item.action)}
-                className="p-3 rounded-xl bg-muted/50 hover:bg-muted/80 border border-border/50 text-left transition-colors"
-              >
-                <p className="text-xs sm:text-sm font-medium truncate">{item.label}</p>
-              </button>
-            ))}
           </div>
 
           {uploadedImages.length > 0 && (
@@ -214,7 +192,7 @@ ${orderData.deliveryMethod === 'mobile_money'
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={mode === 'thinking' ? "Send 5000 RUB to Rwanda..." : "Message..."}
+                placeholder="Type something..."
                 className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground text-sm sm:text-base"
                 disabled={isStreaming || isUploading}
               />
@@ -326,7 +304,7 @@ ${orderData.deliveryMethod === 'mobile_money'
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Send 5000 RUB to Rwanda..."
+                placeholder="Type something..."
                 className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground text-xs sm:text-sm"
                 disabled={isStreaming || isUploading}
               />

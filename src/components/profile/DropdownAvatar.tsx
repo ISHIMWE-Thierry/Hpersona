@@ -1,6 +1,6 @@
 'use client';
 
-import { RefreshCcw, LogOut, User, Settings, HelpCircle, ExternalLink } from 'lucide-react';
+import { RefreshCcw, LogOut, User, Settings, HelpCircle, ExternalLink, CreditCard, History } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   DropdownMenu,
@@ -170,11 +170,28 @@ export function DropdownAvatar() {
               <span>View profile</span>
             </DropdownMenuItem>
             <DropdownMenuItem 
-              onClick={() => toast.info('Settings coming soon!')} 
+              onClick={() => window.open('https://ikambaremit.com/settings', '_blank')} 
               className="cursor-pointer"
             >
               <Settings className="mr-2 h-4 w-4" />
               <span>Settings</span>
+              <ExternalLink className="ml-auto h-3 w-3 text-muted-foreground" />
+            </DropdownMenuItem>
+            <DropdownMenuItem 
+              onClick={() => window.open('https://ikambaremit.com/transactions', '_blank')} 
+              className="cursor-pointer"
+            >
+              <History className="mr-2 h-4 w-4" />
+              <span>Transaction History</span>
+              <ExternalLink className="ml-auto h-3 w-3 text-muted-foreground" />
+            </DropdownMenuItem>
+            <DropdownMenuItem 
+              onClick={() => window.open('https://ikambaremit.com/send', '_blank')} 
+              className="cursor-pointer"
+            >
+              <CreditCard className="mr-2 h-4 w-4" />
+              <span>Send Money</span>
+              <ExternalLink className="ml-auto h-3 w-3 text-muted-foreground" />
             </DropdownMenuItem>
           </div>
 

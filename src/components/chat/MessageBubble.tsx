@@ -1,9 +1,11 @@
 import { Message } from '@/types/chat';
 import { cn } from '@/lib/utils';
-import { User, Bot } from 'lucide-react';
+import { User, Bot, Copy, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import 'katex/dist/katex.min.css';
 import { PaymentDetailsBox, extractPaymentFromContent } from './PaymentDetailsBox';
 import { TransferSummaryBox, extractTransferFromContent } from './TransferSummaryBox';
@@ -13,6 +15,78 @@ import { OrderFlowBox, extractOrderFlowFromContent } from './OrderFlowBox';
 import { QuickRepliesBox, extractQuickRepliesFromContent, detectQuestionReplies } from './QuickRepliesBox';
 import { RecipientDetailsBox, extractRecipientFromContent } from './RecipientDetailsBox';
 import { CopyableValue } from './CopyableValue';
+import { useState } from 'react';
+
+// Code block component with syntax highlighting and copy button
+function CodeBlock({ language, code }: { language: string; code: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Map common language names
+  const languageMap: Record<string, string> = {
+    js: 'javascript',
+    ts: 'typescript',
+    py: 'python',
+    rb: 'ruby',
+    sh: 'bash',
+    yml: 'yaml',
+    md: 'markdown',
+  };
+
+  const displayLanguage = languageMap[language] || language;
+
+  return (
+    <div className="relative group my-3 rounded-lg overflow-hidden border border-border/50 bg-[#282c34]">
+      {/* Header bar with language and copy button */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-black/30 border-b border-border/30">
+        <span className="text-[10px] sm:text-xs font-mono text-gray-400 uppercase">
+          {displayLanguage}
+        </span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 text-[10px] sm:text-xs text-gray-400 hover:text-white transition-colors"
+        >
+          {copied ? (
+            <>
+              <Check className="h-3 w-3" />
+              <span>Copied!</span>
+            </>
+          ) : (
+            <>
+              <Copy className="h-3 w-3" />
+              <span>Copy</span>
+            </>
+          )}
+        </button>
+      </div>
+      {/* Code content */}
+      <SyntaxHighlighter
+        style={oneDark}
+        language={displayLanguage}
+        PreTag="div"
+        customStyle={{
+          margin: 0,
+          padding: '12px',
+          fontSize: '12px',
+          lineHeight: '1.5',
+          background: 'transparent',
+        }}
+        codeTagProps={{
+          style: {
+            fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+          }
+        }}
+      >
+        {code}
+      </SyntaxHighlighter>
+    </div>
+  );
+}
 
 interface MessageBubbleProps {
   message: Message;
@@ -214,23 +288,39 @@ export function MessageBubble({ message, className, style, onSelectRecipient, on
                 {renderContentWithCopyables(cleanContent)}
               </div>
             ) : (
-              <div className="prose prose-xs sm:prose-sm dark:prose-invert max-w-none prose-p:my-0.5 sm:prose-p:my-1 prose-headings:my-1 sm:prose-headings:my-2 prose-ul:my-0.5 sm:prose-ul:my-1 prose-ol:my-0.5 sm:prose-ol:my-1 prose-li:my-0 sm:prose-li:my-0.5 prose-pre:bg-background/50 prose-pre:border prose-pre:border-border prose-code:text-primary prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none text-xs sm:text-sm break-words [overflow-wrap:anywhere]">
+              <div className="prose prose-xs sm:prose-sm dark:prose-invert max-w-none prose-p:my-0.5 sm:prose-p:my-1 prose-headings:my-1 sm:prose-headings:my-2 prose-ul:my-0.5 sm:prose-ul:my-1 prose-ol:my-0.5 sm:prose-ol:my-1 prose-li:my-0 sm:prose-li:my-0.5 prose-code:text-primary prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none text-xs sm:text-sm break-words [overflow-wrap:anywhere]">
                 <ReactMarkdown
                   remarkPlugins={[remarkMath]}
                   rehypePlugins={[rehypeKatex]}
                   components={{
-                    // Custom rendering for code blocks
+                    // Custom rendering for code blocks with syntax highlighting
                     code({ node, inline, className, children, ...props }: any) {
-                      return inline ? (
+                      const match = /language-(\w+)/.exec(className || '');
+                      const codeString = String(children).replace(/\n$/, '');
+                      
+                      if (!inline && match) {
+                        return (
+                          <CodeBlock 
+                            language={match[1]} 
+                            code={codeString}
+                          />
+                        );
+                      }
+                      
+                      // For inline code or code without language
+                      if (!inline && codeString.includes('\n')) {
+                        return (
+                          <CodeBlock 
+                            language="text" 
+                            code={codeString}
+                          />
+                        );
+                      }
+                      
+                      return (
                         <code className={className} {...props}>
                           {children}
                         </code>
-                      ) : (
-                        <pre className="overflow-x-auto p-2 sm:p-3 rounded-lg text-[10px] sm:text-xs">
-                          <code className={className} {...props}>
-                            {children}
-                          </code>
-                        </pre>
                       );
                     },
                     // Better paragraph handling

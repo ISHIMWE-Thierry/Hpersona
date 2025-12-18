@@ -5,8 +5,9 @@ import { Sidebar } from '@/components/layout/Sidebar';
 import { ChatInterface } from '@/components/chat/ChatInterface';
 import { Conversation, Message } from '@/types/chat';
 import { Toaster } from '@/components/ui/sonner';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Plus } from 'lucide-react';
 import { DropdownAvatar } from '@/components/profile/DropdownAvatar';
+import { Button } from '@/components/ui/button';
 import { 
   collection, 
   addDoc, 
@@ -310,12 +311,21 @@ function AppContent() {
       />
       
       <main className="flex-1 flex flex-col h-screen min-h-0 overflow-hidden">
-        {/* Top header with avatar dropdown - glassmorphic style */}
-        <header className="relative flex items-center justify-center px-4 py-3 border-b border-white/10 bg-white/5 dark:bg-black/20 backdrop-blur-xl backdrop-saturate-150">
-          <h1 className="text-lg font-semibold">Ikamba AI</h1>
-          <div className="absolute right-4">
-            <DropdownAvatar />
-          </div>
+        {/* Top header with new chat button and avatar dropdown */}
+        <header className="relative z-40 flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/5 dark:bg-black/20 backdrop-blur-xl backdrop-saturate-150">
+          {/* Spacer for mobile menu button */}
+          <div className="w-10 lg:w-0 lg:hidden" />
+          <Button
+            onClick={handleNewChat}
+            variant="ghost"
+            size="sm"
+            className="flex items-center gap-2 text-sm font-medium"
+          >
+            <Plus className="h-4 w-4" />
+            <span className="hidden sm:inline">New Chat</span>
+          </Button>
+          <h1 className="absolute left-1/2 transform -translate-x-1/2 text-lg font-semibold">Ikamba AI</h1>
+          <DropdownAvatar />
         </header>
         <div className="flex-1 min-h-0">
           <ChatInterface

@@ -20,10 +20,20 @@ import {
   createWhatsAppVerification,
   verifyWhatsAppCode,
   sendWhatsAppVerificationEmail,
+  getDeliveryMethodsForCurrency,
+  updateUserProfile,
+  getMissingUserFields,
+  buildUserContextForAI,
+  formatDeliveryOptionsForAI,
+  getDeliveryOptionsForCurrency,
+  getTransactionById,
+  getStatusDescription,
   CURRENCY_CONFIG,
-  COUNTRY_CONFIG 
+  COUNTRY_CONFIG,
+  CURRENCY_TO_COUNTRY
 } from '@/lib/ikamba-remit';
 
+// OpenAI GPT-4.1 for all AI tasks
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -99,6 +109,52 @@ const tools: OpenAI.ChatCompletionTool[] = [
           whatsappPhone: { type: 'string', description: 'WhatsApp phone number of the user' },
         },
         required: ['code', 'whatsappPhone'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_user_profile',
+      description: 'Update user profile with new information (name, phone, country). Call this when user provides missing info.',
+      parameters: {
+        type: 'object',
+        properties: {
+          userId: { type: 'string', description: 'User ID to update' },
+          displayName: { type: 'string', description: 'User full name' },
+          phoneNumber: { type: 'string', description: 'User phone number' },
+          country: { type: 'string', description: 'User country code (RW, UG, KE, etc.)' },
+        },
+        required: ['userId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_delivery_methods',
+      description: 'Get available delivery methods and mobile providers for a currency/country',
+      parameters: {
+        type: 'object',
+        properties: {
+          currency: { type: 'string', description: 'Currency code (RWF, UGX, KES, etc.)' },
+        },
+        required: ['currency'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_transaction_status',
+      description: 'Check the status of a transaction by its ID. Use when user asks about their transfer status and provides a transaction ID.',
+      parameters: {
+        type: 'object',
+        properties: {
+          transactionId: { type: 'string', description: 'The transaction ID to look up' },
+          userId: { type: 'string', description: 'Optional user ID to search within' },
+        },
+        required: ['transactionId'],
       },
     },
   },
@@ -341,12 +397,18 @@ async function handleFunctionCall(
       
       if (result.success && result.userId) {
         const profile = await getUserProfile(result.userId);
+        // Return comprehensive user info for AI to use
+        const missingFields = getMissingUserFields(profile);
         return JSON.stringify({
           success: true,
           message: result.message,
           userId: result.userId,
           userName: profile?.displayName || profile?.fullName || 'User',
-          userEmail: profile?.email
+          userEmail: profile?.email,
+          userPhone: profile?.phoneNumber || profile?.phone,
+          userCountry: profile?.country,
+          missingFields: missingFields,
+          note: missingFields.length > 0 ? `Ask user for: ${missingFields.join(', ')}` : 'All info available'
         });
       }
       
@@ -357,6 +419,91 @@ async function handleFunctionCall(
     } catch (error) {
       console.error('Error verifying WhatsApp code:', error);
       return JSON.stringify({ success: false, error: 'Verification failed' });
+    }
+  }
+  
+  // Update user profile
+  if (name === 'update_user_profile') {
+    try {
+      const userId = userInfo?.userId || args.userId;
+      if (!userId) {
+        return JSON.stringify({ success: false, error: 'No user ID provided' });
+      }
+      
+      const updates: any = {};
+      if (args.displayName) updates.displayName = args.displayName;
+      if (args.phoneNumber) updates.phoneNumber = args.phoneNumber;
+      if (args.country) updates.country = args.country;
+      
+      const success = await updateUserProfile(userId, updates);
+      
+      return JSON.stringify({
+        success,
+        message: success ? 'Profile updated!' : 'Failed to update',
+        updated: updates
+      });
+    } catch (error) {
+      console.error('Error updating user profile:', error);
+      return JSON.stringify({ success: false, error: 'Update failed' });
+    }
+  }
+  
+  // Get delivery methods for a currency
+  if (name === 'get_delivery_methods') {
+    try {
+      const { currency } = args;
+      const info = getDeliveryMethodsForCurrency(currency);
+      
+      return JSON.stringify({
+        success: true,
+        currency,
+        country: info.country,
+        deliveryMethods: info.deliveryMethods,
+        mobileProviders: info.mobileProviders,
+        note: `For ${currency}, only offer: ${info.deliveryMethods.join(' or ')}${info.mobileProviders.length > 0 ? `. Providers: ${info.mobileProviders.join(', ')}` : ''}`
+      });
+    } catch (error) {
+      console.error('Error getting delivery methods:', error);
+      return JSON.stringify({ success: false, error: 'Failed to get delivery methods' });
+    }
+  }
+  
+  // Check transaction status by ID
+  if (name === 'check_transaction_status') {
+    try {
+      const { transactionId, userId } = args;
+      const transaction = await getTransactionById(transactionId, userId);
+      
+      if (!transaction) {
+        return JSON.stringify({
+          success: false,
+          error: `Transaction ${transactionId} not found. Please check the ID and try again.`
+        });
+      }
+      
+      const statusDesc = getStatusDescription(transaction.status as any);
+      
+      return JSON.stringify({
+        success: true,
+        transactionId: transaction.id,
+        status: transaction.status,
+        statusDescription: statusDesc,
+        amount: transaction.amount,
+        currency: transaction.currency,
+        receiveAmount: transaction.receiveAmount,
+        receiveCurrency: transaction.receiveCurrency,
+        recipientName: transaction.recipientName,
+        recipientPhone: transaction.recipientPhone,
+        deliveryMethod: transaction.deliveryMethod,
+        provider: transaction.provider || transaction.bank || '',
+        createdAt: transaction.createdAt,
+        hasTransferProof: !!transaction.adminTransferProofUrl,
+        hasPaymentProof: !!transaction.paymentProofUrl,
+        message: `Transaction ${transaction.id}: ${statusDesc}. ${transaction.amount} ${transaction.currency} → ${transaction.receiveAmount} ${transaction.receiveCurrency} to ${transaction.recipientName}.${transaction.adminTransferProofUrl ? ' Transfer proof available.' : ''}`
+      });
+    } catch (error) {
+      console.error('Error checking transaction status:', error);
+      return JSON.stringify({ success: false, error: 'Failed to check transaction status' });
     }
   }
   
@@ -484,8 +631,15 @@ async function getRemitContext(userId?: string, whatsappPhone?: string) {
 }
 
 // Build dynamic AI context with real data
-async function buildIkambaContext(userId?: string, whatsappPhone?: string) {
+// Returns both the context text AND the effective user info for verified WhatsApp users
+async function buildIkambaContext(userId?: string, whatsappPhone?: string): Promise<{
+  contextText: string;
+  effectiveUserInfo?: { userId: string; email: string; displayName: string; phone?: string };
+}> {
   const context = await getRemitContext(userId, whatsappPhone);
+  
+  // Track effective user info for verified WhatsApp users
+  let effectiveUserInfo: { userId: string; email: string; displayName: string; phone?: string } | undefined;
   
   // WhatsApp auth status text
   let whatsappAuthText = '';
@@ -493,26 +647,46 @@ async function buildIkambaContext(userId?: string, whatsappPhone?: string) {
     if (context.whatsappAuth?.isVerified) {
       const profile = context.whatsappAuth.userProfile;
       const name = profile?.displayName || profile?.fullName || 'User';
+      const email = profile?.email || '';
+      const phone = profile?.phoneNumber || profile?.phone || '';
+      const country = profile?.country || '';
+      
+      // Check what's missing
+      const missingFields = getMissingUserFields(profile);
+      
+      // Set effective user info for order creation
+      effectiveUserInfo = {
+        userId: context.effectiveUserId!,
+        email: email,
+        displayName: name,
+        phone: phone || whatsappPhone,
+      };
+      
+      // Build comprehensive user context for AI
+      const userDataForAI = buildUserContextForAI(profile);
+      
       whatsappAuthText = `
-WHATSAPP USER STATUS: ✅ VERIFIED
-- User: ${name}
-- Email: ${profile?.email || 'Not set'}
-- UserId: ${context.effectiveUserId}
-- Can make transfers: YES
+WHATSAPP USER: ✅ VERIFIED
+${userDataForAI}
+UserId: ${context.effectiveUserId}
+
+INSTRUCTIONS:
+- USE saved sender info (name, email, phone) when creating orders
+- If any field is missing, ask user and call update_user_profile to save it
+- Auto-fill recipient fields if user sends to previous recipient
 `;
     } else {
       whatsappAuthText = `
-WHATSAPP USER STATUS: ❌ NOT VERIFIED
-This WhatsApp user has NOT linked their account yet.
+WHATSAPP USER: ❌ NOT VERIFIED
+Must verify before transfers.
 
-BEFORE they can make a transfer, you MUST:
-1. Ask for their email address
-2. Call request_whatsapp_verification with their email
-3. Have them send you the 6-digit code from their email
-4. Call verify_whatsapp_code to complete verification
+STEPS:
+1. Ask email: "What's your email address?"
+2. Call request_whatsapp_verification
+3. User sends 6-digit code
+4. Call verify_whatsapp_code
 
-DO NOT create orders for unverified WhatsApp users!
-Say: "Eh boss, mbere yo kohereza amafaranga, ukeneye kuza account yawe. Email yawe ni iyihe?"
+DO NOT create orders for unverified users!
 `;
     }
   }
@@ -618,60 +792,79 @@ If transaction has "adminTransferProofUrl", you can tell them the transfer proof
 `;
   }
 
-  return `
-LIVE EXCHANGE RATES (${context.timestamp}):
-${ratesList || 'Rates temporarily unavailable'}
-${reverseRatesList}
+  // Fetch delivery options from database
+  const deliveryOptionsText = await formatDeliveryOptionsForAI();
+  
+  const corridorDeliveryText = `
+DELIVERY OPTIONS BY DESTINATION CURRENCY (from database):
+${deliveryOptionsText || 'No delivery options configured'}
 
-PAYMENT RECEIVERS (where users send money to Ikamba):
-${receiversList || 'Receivers temporarily unavailable'}
-${exampleText}
+RULES:
+- ONLY offer delivery methods that exist for the DESTINATION currency above
+- If mobile money: ask which provider from the list
+- If bank: ask which bank from the list
+- If cash: mention cash pickup is available
+`;
+
+  const contextText = `
+RATES: ${ratesList || 'N/A'}
+${reverseRatesList}
+RECEIVERS: ${receiversList || 'N/A'}
+${corridorDeliveryText}
 ${recentRecipientsText}
 ${transactionHistoryText}
 ${whatsappAuthText}
 `;
+
+  return { contextText, effectiveUserInfo };
 }
 
-// Ikamba Remit Knowledge Base - Concise version
+// MINIMAL Knowledge Base - saves tokens
 const IKAMBA_REMIT_KNOWLEDGE = `
-CORRIDORS: 
-- Russia to Africa: RUB to RWF, UGX, KES, TZS, BIF, NGN, ETB, XOF, ZAR, SLE
-- Turkey to Africa: TRY to RWF, UGX, KES
-- Africa to Russia: RWF, UGX, KES to RUB (reverse corridors)
+FEES: RUB→Africa: -100 RUB | Africa→RUB: -100 RUB payout | Others: 0
+DELIVERY: Mobile Money 5-30min | Bank 1-3 days
+IMPORTANT: Only offer delivery methods that exist in DELIVERY OPTIONS BY DESTINATION CURRENCY`;
 
-FEE STRUCTURE:
-- RUB → Africa: 100 RUB fixed fee (deducted from send amount before conversion)
-- Africa → RUB (RWF/UGX/KES → RUB): NO fixed fee, BUT 100 RUB payout fee (deducted from receive amount AFTER conversion)
-- Other corridors: 0 fees
+// MINIMAL AI Identity - ultra concise, multi-language aware
+const IKAMBA_AI_IDENTITY = `You are Ikamba AI. Be EXTREMELY BRIEF.
 
-CALCULATION FORMULAS:
-1. RUB → RWF (normal):
-   Fee = 100 RUB
-   Net = sendAmount - 100
-   Receive = Net × rate
-   Example: 10,000 RUB → RWF at rate 14.5
-   Net = 10,000 - 100 = 9,900 RUB
-   Receive = 9,900 × 14.5 = 143,550 RWF
+LANGUAGE RULES:
+- Detect user's language from their message
+- If Kinyarwanda: respond in English but can say "Yego" (yes), "Oya" (no)
+- If Swahili (Kenya/Tanzania/Uganda): respond in English, can say "Sawa" (ok), "Asante" (thanks)
+- Default: English
+- NEVER use hard Kinyarwanda words - always translate to English
 
-2. RWF/UGX/KES → RUB (reverse - DIFFERENT!):
-   Fee = 0 (no send fee)
-   Raw = sendAmount × rate
-   Payout Fee = 100 RUB (deducted from receive)
-   Receive = Raw - 100 RUB
-   Example: 100,000 RWF → RUB at rate 0.065
-   Raw = 100,000 × 0.065 = 6,500 RUB
-   Receive = 6,500 - 100 = 6,400 RUB
+RESPONSE RULES:
+- Max 1-2 sentences
+- No filler words
+- "hey" → "Hey!"
+- Math: use $ and $$ only
 
-DELIVERY: Mobile Money (5-30 min), Bank (1-3 days)
-COUNTRIES: Rwanda +250 RWF MTN | Uganda +256 UGX MTN/Airtel | Kenya +254 KES M-Pesa | Tanzania +255 TZS M-Pesa | Russia +7 RUB Bank
-`;
+DELIVERY METHOD RULES:
+- Check DELIVERY OPTIONS BY DESTINATION CURRENCY for available methods
+- ONLY offer what's listed for that destination currency
+- When asking for delivery method, LIST ALL OPTIONS available:
+  * If banks exist: list them like "Bank transfer: AXON Tunga, BK, Equity..."
+  * If mobile money exists: list them like "Mobile Money: MTN, Airtel..."
+  * If cash exists: mention "Cash pickup"
+- Example: "How should [recipient] receive the money?
+  📱 Mobile Money: MTN, Airtel
+  🏦 Bank: AXON Tunga, BK, Equity Bank"
 
-// General AI Identity with Remittance capability
-const IKAMBA_AI_IDENTITY = `You are a helpful assistant that can help with ANY topic, including money transfers to Africa.
+TRANSFER RULES:
+- Use tags for UI boxes
+- Ask ONE thing at a time
+- If user authenticated: use their saved info (name, email, phone)
+- If info missing: ask and save it
 
-CAPABILITIES:
-- General knowledge, math, science, coding, writing, analysis
-- Money transfers to Africa (Ikamba Remit service)
+TAGS:
+[[TRANSFER:amount:currency:fee:net:rate:receive:receiveCurrency]]
+[[PAYMENT:amount:currency:account:holder:provider:]]
+[[RECIPIENT:name:phone:amount:currency:provider:bank:account:country]]
+[[SUCCESS:id:sender:email:recipient:amount:currency:receive:receiveCurrency]]
+
+FLOW: Amount→[[TRANSFER]]→Name?→LIST delivery options (banks/mobile money/cash from DELIVERY OPTIONS)?→Specific provider/bank?→Phone?→(use saved sender info or ask)→Confirm?→create_transfer_order
 
 MATH FORMATTING (IMPORTANT):
 - For inline math, use single dollar signs: $e^{ix} = \\cos x + i\\sin x$
@@ -700,9 +893,13 @@ REMITTANCE TAGS:
 
 REMITTANCE FLOW:
 1. Amount + country → Show [[TRANSFER:...]], ask "Recipient name?"
-2. Name → "Mobile Money or Bank?"
-3. Method → If Mobile: "Provider? MTN/Airtel/M-Pesa" | If Bank: "Bank name?"
-4. Provider/Bank → "Recipient phone?"
+2. Name → LIST ALL delivery options from DELIVERY OPTIONS for that currency:
+   "How should [name] receive the money?
+   📱 Mobile Money: [list providers]
+   🏦 Bank: [list banks]
+   💵 Cash: [if available]"
+3. User picks type → Ask specific: "Which provider/bank?" (list the specific ones)
+4. Provider/Bank chosen → "Recipient phone number?"
 5. Phone → "Your email for order confirmation?"
 6. Email → "Your phone number?"
 7. Sender phone → "Payment method? Sberbank/Cash"
@@ -710,38 +907,29 @@ REMITTANCE FLOW:
 9. Confirmed → Call create_transfer_order, show [[PAYMENT:...]] and [[RECIPIENT:...]]
 
 TRANSACTION STATUS:
-- If user asks about their transfer, check the USER'S RECENT TRANSACTIONS in context
-- If their transaction has "adminTransferProofUrl", tell them the transfer proof is available
-- Guide them to check ikambaremit.com for full details
+- If user asks about their transfer status and gives a transaction ID → call check_transaction_status
+- If user asks about status without ID → check USER'S RECENT TRANSACTIONS in context
+- If transaction has "adminTransferProofUrl" → tell them transfer proof is available
+- Show: status emoji, amount, recipient, and any available proof
+
+STATUS MEANINGS:
+📝 draft - Not submitted
+⏳ pending_payment - Waiting for payment
+🔄 awaiting_confirmation - Payment being verified
+⚙️ processing - Transfer in progress
+✈️ sent - Money sent
+📬 delivered - Delivered to recipient
+✅ completed - Done
+❌ failed - Failed
+🚫 cancelled - Cancelled
 
 ${IKAMBA_REMIT_KNOWLEDGE}`;
 
-const ADVANCED_THINKING_PROMPT = `You are Ikamba AI - a highly capable assistant with deep reasoning abilities.
+// MINIMAL Thinking Prompt - concise but thorough for complex problems
+const ADVANCED_THINKING_PROMPT = `You are Ikamba AI. For complex problems, think step-by-step but be concise.
 
-CAPABILITIES:
-- Complex problem solving, math, science, coding, analysis
-- Step-by-step reasoning for difficult problems
-- Money transfers to Africa (Ikamba Remit)
-
-MATH FORMATTING (CRITICAL):
-- Inline math: $expression$ (e.g., $e^{ix} = \\cos x + i\\sin x$)
-- Block math: 
-$$
-expression
-$$
-- NEVER use \\[ \\] or \\( \\) brackets
-- Escape backslashes: \\cos, \\sin, \\frac, \\sum, \\int, \\pi, \\theta
-
-RESPONSE APPROACH:
-- Think through problems carefully
-- Show your reasoning process
-- Use proper markdown and LaTeX formatting
-- Be thorough but clear
-
-For MONEY TRANSFERS - use these tags:
-[[TRANSFER:sendAmount:sendCurrency:fee:netAmount:rate:receiveAmount:receiveCurrency]]
-[[PAYMENT:amount:currency:cardNumber:cardholderName:bankName:]]
-[[RECIPIENT:name:phone:receiveAmount:receiveCurrency:provider:bank:accountNumber:country]]
+MATH: Use $ for inline, $$ for block. Never use \\[ \\]
+TRANSFERS: Use [[TRANSFER:...]] [[PAYMENT:...]] [[RECIPIENT:...]] tags
 
 ${IKAMBA_REMIT_KNOWLEDGE}`;
 
@@ -759,30 +947,30 @@ export async function POST(req: NextRequest) {
       : undefined;
 
     // Fetch live rates and payment receivers for context (including WhatsApp auth check)
-    const liveContext = await buildIkambaContext(userInfo?.userId, whatsappPhone);
+    // This also returns effective user info for verified WhatsApp users
+    const { contextText: liveContext, effectiveUserInfo } = await buildIkambaContext(userInfo?.userId, whatsappPhone);
+    
+    // Use effective user info (for verified WhatsApp users) or original userInfo
+    // This ensures orders are created under the user's real Firebase account, not whatsapp_{phone}
+    const activeUserInfo = effectiveUserInfo || userInfo;
     
     // Build user context for the AI
     let userContext = '';
-    if (userInfo) {
-      userContext = `\n\nLOGGED IN USER:\n- User ID: ${userInfo.userId}\n- Email: ${userInfo.email || 'not set'}\n- Name: ${userInfo.displayName || 'not set'}\n\nWhen creating orders, use this user's ID and email.`;
+    if (activeUserInfo) {
+      userContext = `\n\nLOGGED IN USER:\n- User ID: ${activeUserInfo.userId}\n- Email: ${activeUserInfo.email || 'not set'}\n- Name: ${activeUserInfo.displayName || 'not set'}\n\nWhen creating orders, use this user's ID and email.`;
     }
     
     // Add custom system hint if provided (e.g., WhatsApp style instructions)
-    const customHint = systemHint ? `\n\n--- SPECIAL INSTRUCTIONS ---\n${systemHint}\n---\n` : '';
+    const customHint = systemHint ? `\n${systemHint}` : '';
     
-    // Choose system prompt based on mode and inject live data
-    const basePrompt = mode === 'thinking' 
-      ? ADVANCED_THINKING_PROMPT
-      : IKAMBA_AI_IDENTITY;
+    // Determine if this is a WhatsApp user (for prompt selection)
+    const isWhatsAppUser = !!whatsappPhone;
     
-    const systemPrompt = `${basePrompt}
-
---- LIVE DATA ---
-${liveContext}
----${userContext}${customHint}
-
-NEVER DUPLICATE TEXT. Say each thing ONCE only.
-When user confirms, call create_transfer_order function.`;
+    // Always use minimal prompt - same for web and WhatsApp
+    const basePrompt = mode === 'thinking' ? ADVANCED_THINKING_PROMPT : IKAMBA_AI_IDENTITY;
+    
+    // Build minimal system prompt
+    const systemPrompt = `${basePrompt}\n${liveContext}${userContext}${customHint}`;
 
     // Prepare messages with system prompt and handle images for vision
     const messagesWithSystem: any[] = [
@@ -887,16 +1075,16 @@ When user confirms, call create_transfer_order function.`;
     console.log('[Context] Extracted from conversation:', currentTransactionContext);
     
     // Force upload_payment_proof if image uploaded after payment context
-    if (hasRecentImage && hasPaymentContext && userInfo?.userId) {
+    if (hasRecentImage && hasPaymentContext && activeUserInfo?.userId) {
       console.log('Detected image upload in payment context - calling upload_payment_proof');
       console.log('Image data type:', typeof latestUserImage);
       console.log('Image data starts with:', latestUserImage?.substring(0, 100));
       
-      // Pass conversation context to handler
+      // Pass conversation context to handler - use activeUserInfo for verified WhatsApp users
       const result = await handleFunctionCall(
         'upload_payment_proof', 
-        { userId: userInfo.userId, conversationContext: currentTransactionContext }, 
-        userInfo, 
+        { userId: activeUserInfo.userId, conversationContext: currentTransactionContext }, 
+        activeUserInfo, 
         latestUserImage
       );
       const parsedResult = JSON.parse(result);
@@ -950,13 +1138,16 @@ Transfer is being processed. You will receive confirmation shortly.`;
       }
     }
 
+    // Always use OpenAI GPT-4.1 for all AI tasks
+    console.log(`[AI Selection] Using OpenAI (gpt-4.1) for ${isWhatsAppUser ? 'WhatsApp' : 'Web'} user`);
+
     // First call - check if AI wants to use tools
     const initialResponse = await openai.chat.completions.create({
       model: 'gpt-4.1',
       messages: messagesWithSystem,
       tools: tools,
       tool_choice: 'auto',
-      temperature: 0, // Use 0 for strict format compliance
+      temperature: 0,
     });
 
     const initialChoice = initialResponse.choices[0];
@@ -975,8 +1166,8 @@ Transfer is being processed. You will receive confirmation shortly.`;
         
         console.log(`AI calling function: ${functionName}`, functionArgs);
         
-        // Pass userInfo and latestUserImage to the function handler
-        const result = await handleFunctionCall(functionName, functionArgs, userInfo, latestUserImage);
+        // Pass activeUserInfo (verified WhatsApp user's real account) and latestUserImage to the function handler
+        const result = await handleFunctionCall(functionName, functionArgs, activeUserInfo, latestUserImage);
         toolResults.push({
           tool_call_id: toolCall.id,
           role: 'tool' as const,
@@ -992,7 +1183,7 @@ Transfer is being processed. You will receive confirmation shortly.`;
       const finalResponse = await openai.chat.completions.create({
         model: 'gpt-4.1',
         messages: messagesWithSystem,
-        temperature: 0, // Use 0 for strict format compliance
+        temperature: 0,
         stream: true,
       });
       
@@ -1053,11 +1244,10 @@ Transfer is being processed. You will receive confirmation shortly.`;
     }
 
     // No function call - stream the initial response
-    // We need to make a streaming call since initial was non-streaming
     const streamingResponse = await openai.chat.completions.create({
       model: 'gpt-4.1',
       messages: messagesWithSystem,
-      temperature: 0, // Use 0 for strict format compliance
+      temperature: 0,
       stream: true,
     });
 

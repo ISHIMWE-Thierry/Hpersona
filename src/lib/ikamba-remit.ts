@@ -193,6 +193,26 @@ export type TransactionStatus =
   | 'failed'
   | 'cancelled';
 
+// Delivery option from Firestore deliveryOptions collection
+export interface DeliveryOption {
+  id: string;           // Document ID like "RWF_bank_axon_tunga"
+  currency: string;     // e.g., "RWF"
+  type: 'bank' | 'mobile_money' | 'cash';
+  name: string;         // e.g., "AXON Tunga" or "MTN Mobile Money"
+  provider?: string;    // Provider name for mobile money
+  createdAt?: Date;
+  createdBy?: string;
+}
+
+// Parsed delivery options grouped by currency and type
+export interface DeliveryOptionsMap {
+  [currency: string]: {
+    bank: string[];      // List of bank names
+    mobile_money: string[]; // List of mobile money providers
+    cash: string[];      // List of cash pickup options
+  };
+}
+
 // Collection names matching blink-1 Firestore structure
 const COLLECTIONS = {
   RATES: 'rates',
@@ -204,6 +224,7 @@ const COLLECTIONS = {
   FEE_CONFIGS: 'feeConfigs',
   APP_DATA: 'appdata',
   MAIL: 'mail', // For Firebase email extension
+  DELIVERY_OPTIONS: 'deliveryOptions', // Delivery methods per currency
 };
 
 // External API for live exchange rates (same as blink-1)
@@ -229,19 +250,32 @@ export const CURRENCY_CONFIG: Record<string, Currency> = {
   SLE: { code: 'SLE', name: 'Sierra Leonean Leone', symbol: 'Le', country: 'Sierra Leone', countryCode: 'SL', isActive: true, decimalPlaces: 2 },
 };
 
-// Country to currency mapping
-export const COUNTRY_CONFIG: Record<string, { currency: string; name: string; phonePrefix: string }> = {
-  RW: { currency: 'RWF', name: 'Rwanda', phonePrefix: '+250' },
-  RU: { currency: 'RUB', name: 'Russia', phonePrefix: '+7' },
-  UG: { currency: 'UGX', name: 'Uganda', phonePrefix: '+256' },
-  TZ: { currency: 'TZS', name: 'Tanzania', phonePrefix: '+255' },
-  KE: { currency: 'KES', name: 'Kenya', phonePrefix: '+254' },
-  TR: { currency: 'TRY', name: 'Turkey', phonePrefix: '+90' },
-  BI: { currency: 'BIF', name: 'Burundi', phonePrefix: '+257' },
-  NG: { currency: 'NGN', name: 'Nigeria', phonePrefix: '+234' },
-  ET: { currency: 'ETB', name: 'Ethiopia', phonePrefix: '+251' },
-  ZA: { currency: 'ZAR', name: 'South Africa', phonePrefix: '+27' },
-  SL: { currency: 'SLE', name: 'Sierra Leone', phonePrefix: '+232' },
+// Country to currency mapping with delivery methods
+export const COUNTRY_CONFIG: Record<string, { 
+  currency: string; 
+  name: string; 
+  phonePrefix: string;
+  deliveryMethods: string[];
+  mobileProviders?: string[];
+  language?: string;
+}> = {
+  RW: { currency: 'RWF', name: 'Rwanda', phonePrefix: '+250', deliveryMethods: ['mobile_money', 'bank'], mobileProviders: ['MTN', 'Airtel'], language: 'rw' },
+  RU: { currency: 'RUB', name: 'Russia', phonePrefix: '+7', deliveryMethods: ['bank', 'cash'], language: 'ru' },
+  UG: { currency: 'UGX', name: 'Uganda', phonePrefix: '+256', deliveryMethods: ['mobile_money', 'bank'], mobileProviders: ['MTN', 'Airtel'], language: 'sw' },
+  TZ: { currency: 'TZS', name: 'Tanzania', phonePrefix: '+255', deliveryMethods: ['mobile_money', 'bank'], mobileProviders: ['M-Pesa', 'Airtel', 'Tigo'], language: 'sw' },
+  KE: { currency: 'KES', name: 'Kenya', phonePrefix: '+254', deliveryMethods: ['mobile_money', 'bank'], mobileProviders: ['M-Pesa', 'Airtel'], language: 'sw' },
+  TR: { currency: 'TRY', name: 'Turkey', phonePrefix: '+90', deliveryMethods: ['bank'], language: 'tr' },
+  BI: { currency: 'BIF', name: 'Burundi', phonePrefix: '+257', deliveryMethods: ['mobile_money'], mobileProviders: ['Lumicash', 'Ecocash'], language: 'rw' },
+  NG: { currency: 'NGN', name: 'Nigeria', phonePrefix: '+234', deliveryMethods: ['bank', 'mobile_money'], mobileProviders: ['OPay', 'Palmpay'], language: 'en' },
+  ET: { currency: 'ETB', name: 'Ethiopia', phonePrefix: '+251', deliveryMethods: ['bank', 'mobile_money'], mobileProviders: ['Telebirr'], language: 'am' },
+  ZA: { currency: 'ZAR', name: 'South Africa', phonePrefix: '+27', deliveryMethods: ['bank', 'mobile_money'], mobileProviders: ['FNB', 'Capitec'], language: 'en' },
+  SL: { currency: 'SLE', name: 'Sierra Leone', phonePrefix: '+232', deliveryMethods: ['mobile_money', 'bank'], mobileProviders: ['Orange'], language: 'en' },
+};
+
+// Currency to country mapping
+export const CURRENCY_TO_COUNTRY: Record<string, string> = {
+  RWF: 'RW', UGX: 'UG', TZS: 'TZ', KES: 'KE', RUB: 'RU', TRY: 'TR',
+  BIF: 'BI', NGN: 'NG', ETB: 'ET', ZAR: 'ZA', SLE: 'SL', XOF: 'XOF'
 };
 
 // Fee configuration from blink-1
@@ -259,7 +293,126 @@ let rateAdjustmentsCache: Map<string, number> = new Map();
 let rateAdjustmentsCacheTimestamp: number | null = null;
 let appDataCache: AppData | null = null;
 let userProfileCache: Map<string, { profile: UserProfile; timestamp: number }> = new Map();
+let deliveryOptionsCache: DeliveryOptionsMap | null = null;
+let deliveryOptionsCacheTimestamp: number | null = null;
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Fetch delivery options from Firestore deliveryOptions collection
+ * Document IDs are like "RWF_bank_axon_tunga", "RUB_cash_pickup", "XOF_mobile_mtn_mobile_money"
+ */
+export async function fetchDeliveryOptions(): Promise<DeliveryOptionsMap> {
+  // Check cache first
+  if (deliveryOptionsCache && deliveryOptionsCacheTimestamp && 
+      Date.now() - deliveryOptionsCacheTimestamp < CACHE_TTL) {
+    return deliveryOptionsCache;
+  }
+
+  try {
+    const optionsRef = collection(db, COLLECTIONS.DELIVERY_OPTIONS);
+    const snapshot = await getDocs(optionsRef);
+    
+    const optionsMap: DeliveryOptionsMap = {};
+    
+    snapshot.forEach((docSnapshot) => {
+      const data = docSnapshot.data();
+      const docId = docSnapshot.id; // e.g., "RWF_bank_axon_tunga"
+      
+      // Parse document ID to extract currency and type
+      // Format: CURRENCY_type_name (e.g., RWF_bank_axon_tunga, XOF_mobile_mtn_mobile_money)
+      const parts = docId.split('_');
+      if (parts.length < 2) return;
+      
+      const currency = data.currency || parts[0].toUpperCase();
+      const type = data.type || parts[1]; // 'bank', 'mobile', 'cash'
+      const name = data.name || parts.slice(2).join(' ');
+      
+      // Initialize currency entry if not exists
+      if (!optionsMap[currency]) {
+        optionsMap[currency] = {
+          bank: [],
+          mobile_money: [],
+          cash: [],
+        };
+      }
+      
+      // Normalize type and add to appropriate array
+      if (type === 'bank' && name && !optionsMap[currency].bank.includes(name)) {
+        optionsMap[currency].bank.push(name);
+      } else if ((type === 'mobile' || type === 'mobile_money') && name && !optionsMap[currency].mobile_money.includes(name)) {
+        optionsMap[currency].mobile_money.push(name);
+      } else if (type === 'cash' && name && !optionsMap[currency].cash.includes(name)) {
+        optionsMap[currency].cash.push(name);
+      }
+    });
+    
+    // Update cache
+    deliveryOptionsCache = optionsMap;
+    deliveryOptionsCacheTimestamp = Date.now();
+    
+    console.log('Fetched delivery options:', JSON.stringify(optionsMap, null, 2));
+    return optionsMap;
+  } catch (error) {
+    console.error('Error fetching delivery options:', error);
+    // Return empty map on error
+    return {};
+  }
+}
+
+/**
+ * Get delivery options for a specific currency
+ */
+export async function getDeliveryOptionsForCurrency(currency: string): Promise<{
+  bank: string[];
+  mobile_money: string[];
+  cash: string[];
+  hasOptions: boolean;
+}> {
+  const allOptions = await fetchDeliveryOptions();
+  const currencyUpper = currency.toUpperCase();
+  
+  if (allOptions[currencyUpper]) {
+    return {
+      ...allOptions[currencyUpper],
+      hasOptions: true,
+    };
+  }
+  
+  return {
+    bank: [],
+    mobile_money: [],
+    cash: [],
+    hasOptions: false,
+  };
+}
+
+/**
+ * Format delivery options for AI context
+ */
+export async function formatDeliveryOptionsForAI(): Promise<string> {
+  const allOptions = await fetchDeliveryOptions();
+  
+  const lines: string[] = [];
+  for (const [currency, options] of Object.entries(allOptions)) {
+    const parts: string[] = [];
+    
+    if (options.bank.length > 0) {
+      parts.push(`Bank: ${options.bank.join(', ')}`);
+    }
+    if (options.mobile_money.length > 0) {
+      parts.push(`Mobile Money: ${options.mobile_money.join(', ')}`);
+    }
+    if (options.cash.length > 0) {
+      parts.push(`Cash: ${options.cash.join(', ')}`);
+    }
+    
+    if (parts.length > 0) {
+      lines.push(`${currency}: ${parts.join(' | ')}`);
+    }
+  }
+  
+  return lines.join('\n');
+}
 
 /**
  * Fetch rate adjustments from Firestore (for server-side use)
@@ -871,6 +1024,84 @@ export async function checkWhatsAppAuth(whatsappPhone: string): Promise<{
     console.error('Error checking WhatsApp auth:', error);
     return { isVerified: false };
   }
+}
+
+/**
+ * Get delivery methods and mobile providers for a currency/country
+ */
+export function getDeliveryMethodsForCurrency(currency: string): {
+  deliveryMethods: string[];
+  mobileProviders: string[];
+  country: string;
+} {
+  const countryCode = CURRENCY_TO_COUNTRY[currency.toUpperCase()];
+  const config = countryCode ? COUNTRY_CONFIG[countryCode] : null;
+  
+  if (config) {
+    return {
+      deliveryMethods: config.deliveryMethods,
+      mobileProviders: config.mobileProviders || [],
+      country: config.name,
+    };
+  }
+  
+  // Default fallback
+  return {
+    deliveryMethods: ['mobile_money', 'bank'],
+    mobileProviders: ['MTN', 'Airtel'],
+    country: 'Unknown',
+  };
+}
+
+/**
+ * Update user profile with new information
+ */
+export async function updateUserProfile(
+  userId: string, 
+  updates: Partial<UserProfile>
+): Promise<boolean> {
+  try {
+    const userRef = doc(db, COLLECTIONS.USERS, userId);
+    await updateDoc(userRef, {
+      ...updates,
+      updatedAt: serverTimestamp(),
+    });
+    return true;
+  } catch (error) {
+    console.error('Error updating user profile:', error);
+    return false;
+  }
+}
+
+/**
+ * Get missing required fields for a user to complete an order
+ */
+export function getMissingUserFields(profile: UserProfile | null): string[] {
+  const missing: string[] = [];
+  if (!profile) return ['all user data'];
+  
+  if (!profile.displayName && !profile.fullName) missing.push('name');
+  if (!profile.email) missing.push('email');
+  if (!profile.phoneNumber && !profile.phone) missing.push('phone');
+  
+  return missing;
+}
+
+/**
+ * Build user context for AI with all available data
+ */
+export function buildUserContextForAI(profile: UserProfile | null): string {
+  if (!profile) return 'USER: Not authenticated';
+  
+  const name = profile.displayName || profile.fullName || 'Unknown';
+  const email = profile.email || 'Not set';
+  const phone = profile.phoneNumber || profile.phone || 'Not set';
+  const country = profile.country || 'Not set';
+  
+  const missing = getMissingUserFields(profile);
+  const missingText = missing.length > 0 ? `\nMISSING: ${missing.join(', ')} - ASK USER` : '';
+  
+  return `USER: ${name} | Email: ${email} | Phone: ${phone} | Country: ${country}${missingText}`;
 }
 
 /**
@@ -1906,12 +2137,12 @@ export async function getAllRecentTransactions(maxResults = 100): Promise<Transf
 export function formatCurrency(amount: number, currencyCode: string): string {
   const currency = CURRENCY_CONFIG[currencyCode.toUpperCase()];
   if (currency) {
-    return `${currency.symbol}${amount.toLocaleString(undefined, { 
+    return `${amount.toLocaleString(undefined, { 
       minimumFractionDigits: currency.decimalPlaces,
       maximumFractionDigits: currency.decimalPlaces 
-    })}`;
+    })} ${currencyCode}`;
   }
-  return `${currencyCode} ${amount.toLocaleString()}`;
+  return `${amount.toLocaleString()} ${currencyCode}`;
 }
 
 /**
@@ -1954,7 +2185,7 @@ IKAMBA REMIT - INTERNATIONAL MONEY TRANSFER SERVICE
 Ikamba Remit is a fast, secure, and affordable money transfer service that allows users to send money internationally, especially to African countries.
 
 SUPPORTED CURRENCIES:
-${currencies.map(c => `- ${c.code} (${c.name}) ${c.symbol} - ${c.country}`).join('\n')}
+${currencies.map(c => `- ${c.code} (${c.name}) - ${c.country}`).join('\n')}
 
 SUPPORTED COUNTRIES:
 ${Object.entries(COUNTRY_CONFIG).map(([code, info]) => `- ${info.name} (${code}) - Currency: ${info.currency}, Phone: ${info.phonePrefix}`).join('\n')}
@@ -2432,6 +2663,157 @@ export async function getLatestUserTransaction(
     console.error('Error getting latest transaction:', error);
     return null;
   }
+}
+
+/**
+ * Get transaction by ID - searches across all users
+ * Transaction IDs are unique, so we can find them by searching
+ */
+export async function getTransactionById(
+  transactionId: string,
+  userId?: string
+): Promise<{
+  id: string;
+  userId: string;
+  status: string;
+  amount: number;
+  currency: string;
+  receiveAmount: number;
+  receiveCurrency: string;
+  recipientName: string;
+  recipientPhone: string;
+  deliveryMethod: string;
+  provider?: string;
+  bank?: string;
+  createdAt: string;
+  updatedAt?: string;
+  adminTransferProofUrl?: string;
+  paymentProofUrl?: string;
+  statusHistory?: Array<{ status: string; timestamp: string }>;
+} | null> {
+  try {
+    // If we have a userId, search directly in their transactions
+    if (userId) {
+      const txnRef = doc(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS, transactionId);
+      const txnDoc = await getDoc(txnRef);
+      
+      if (txnDoc.exists()) {
+        const data = txnDoc.data();
+        return formatTransactionResponse(txnDoc.id, userId, data);
+      }
+    }
+    
+    // Search across all users using collectionGroup
+    const transactionsQuery = query(
+      collectionGroup(db, COLLECTIONS.TRANSACTIONS),
+      where('__name__', '==', transactionId),
+      limit(1)
+    );
+    
+    // Alternative: search by transactionId field if document ID doesn't match
+    const byIdQuery = query(
+      collectionGroup(db, COLLECTIONS.TRANSACTIONS),
+      where('transactionId', '==', transactionId),
+      limit(1)
+    );
+    
+    // Try document ID match first
+    let snapshot = await getDocs(transactionsQuery);
+    
+    if (snapshot.empty) {
+      // Try transactionId field
+      snapshot = await getDocs(byIdQuery);
+    }
+    
+    if (snapshot.empty) {
+      // Last resort: search by partial ID match in recent transactions
+      const recentQuery = query(
+        collectionGroup(db, COLLECTIONS.TRANSACTIONS),
+        orderBy('date', 'desc'),
+        limit(100)
+      );
+      const recentSnapshot = await getDocs(recentQuery);
+      
+      for (const docSnap of recentSnapshot.docs) {
+        if (docSnap.id === transactionId || 
+            docSnap.id.includes(transactionId) ||
+            docSnap.data().transactionId === transactionId) {
+          const pathParts = docSnap.ref.path.split('/');
+          const foundUserId = pathParts[1]; // users/{userId}/transactions/{txnId}
+          return formatTransactionResponse(docSnap.id, foundUserId, docSnap.data());
+        }
+      }
+      
+      console.log('[getTransactionById] Transaction not found:', transactionId);
+      return null;
+    }
+    
+    const txnDoc = snapshot.docs[0];
+    const pathParts = txnDoc.ref.path.split('/');
+    const foundUserId = pathParts[1];
+    
+    return formatTransactionResponse(txnDoc.id, foundUserId, txnDoc.data());
+  } catch (error) {
+    console.error('Error getting transaction by ID:', error);
+    return null;
+  }
+}
+
+/**
+ * Format transaction data for AI response
+ */
+function formatTransactionResponse(id: string, userId: string, data: any): {
+  id: string;
+  userId: string;
+  status: string;
+  amount: number;
+  currency: string;
+  receiveAmount: number;
+  receiveCurrency: string;
+  recipientName: string;
+  recipientPhone: string;
+  deliveryMethod: string;
+  provider?: string;
+  bank?: string;
+  createdAt: string;
+  updatedAt?: string;
+  adminTransferProofUrl?: string;
+  paymentProofUrl?: string;
+  statusHistory?: Array<{ status: string; timestamp: string }>;
+} {
+  // Parse date
+  let createdAt = '';
+  if (data.date?.toDate) {
+    createdAt = data.date.toDate().toISOString();
+  } else if (data.date?.seconds) {
+    createdAt = new Date(data.date.seconds * 1000).toISOString();
+  } else if (typeof data.date === 'string') {
+    createdAt = data.date;
+  } else if (data.createdAt) {
+    createdAt = typeof data.createdAt === 'string' 
+      ? data.createdAt 
+      : data.createdAt?.toDate?.()?.toISOString() || '';
+  }
+  
+  return {
+    id,
+    userId,
+    status: data.status || 'pending',
+    amount: data.amount || data.amountToPay || 0,
+    currency: data.currency || data.baseCurrency || 'RUB',
+    receiveAmount: data.receiveAmount || data.receiverGets || 0,
+    receiveCurrency: data.receiveCurrency || data.transferCurrency || 'RWF',
+    recipientName: data.recipientName || data.recipientsfname || '',
+    recipientPhone: data.recipientPhone || data.recipientsPhone || '',
+    deliveryMethod: data.deliveryMethod || data.transfermethod || '',
+    provider: data.provider || data.mobileProvider || '',
+    bank: data.bank || data.recipientBank || '',
+    createdAt,
+    updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt || '',
+    adminTransferProofUrl: data.adminTransferProofUrl || '',
+    paymentProofUrl: data.paymentProofUrl || '',
+    statusHistory: data.statusHistory || [],
+  };
 }
 
 // Export FEE_CONFIG for external use
