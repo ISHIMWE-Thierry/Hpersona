@@ -31,6 +31,7 @@ function AppContent() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [selectedModel, setSelectedModel] = useState<AIModel>('gpt-4o');
   const [functionUrl, setFunctionUrl] = useState<string | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // Check for deployed OpenAI function
   useEffect(() => {
@@ -308,23 +309,27 @@ function AppContent() {
         onNewChat={handleNewChat}
         onSelectConversation={handleSelectConversation}
         onDeleteConversation={handleDeleteConversation}
+        onMobileOpenChange={setIsSidebarOpen}
       />
       
       <main className="flex-1 flex flex-col h-screen min-h-0 overflow-hidden">
         {/* Top header with new chat button and avatar dropdown */}
-        <header className="relative z-40 flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/5 dark:bg-black/20 backdrop-blur-xl backdrop-saturate-150">
+        <header className="relative z-40 flex items-center justify-between px-4 py-3 border-b border-white/10 bg-background/95 backdrop-blur-xl backdrop-saturate-150">
           {/* Spacer for mobile menu button */}
-          <div className="w-10 lg:w-0 lg:hidden" />
+          <div className="w-10 lg:hidden" />
           <Button
             onClick={handleNewChat}
             variant="ghost"
             size="sm"
-            className="flex items-center gap-2 text-sm font-medium"
+            className="flex items-center gap-2 text-sm font-medium hover:bg-muted"
           >
             <Plus className="h-4 w-4" />
             <span className="hidden sm:inline">New Chat</span>
           </Button>
-          <h1 className="absolute left-1/2 transform -translate-x-1/2 text-lg font-semibold">Ikamba AI</h1>
+          {/* Title - hidden when sidebar is open on mobile */}
+          <h1 className={`absolute left-1/2 transform -translate-x-1/2 text-lg font-semibold transition-opacity duration-200 ${isSidebarOpen ? 'opacity-0 lg:opacity-100' : 'opacity-100'}`}>
+            Ikamba AI
+          </h1>
           <DropdownAvatar />
         </header>
         <div className="flex-1 min-h-0">

@@ -12,6 +12,7 @@ interface SidebarProps {
   onNewChat: () => void;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
+  onMobileOpenChange?: (isOpen: boolean) => void;
 }
 
 export function Sidebar({
@@ -20,9 +21,15 @@ export function Sidebar({
   onNewChat,
   onSelectConversation,
   onDeleteConversation,
+  onMobileOpenChange,
 }: SidebarProps) {
   const { user, signOut } = useAuth();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+
+  const handleMobileOpenChange = (open: boolean) => {
+    setIsMobileOpen(open);
+    onMobileOpenChange?.(open);
+  };
 
   const sidebarContent = (
     <div className="flex h-full flex-col">
@@ -31,7 +38,7 @@ export function Sidebar({
         <Button
           onClick={() => {
             onNewChat();
-            setIsMobileOpen(false);
+            handleMobileOpenChange(false);
           }}
           className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground"
         >
@@ -42,7 +49,7 @@ export function Sidebar({
           variant="ghost"
           size="icon"
           className="ml-2 lg:hidden"
-          onClick={() => setIsMobileOpen(false)}
+          onClick={() => handleMobileOpenChange(false)}
         >
           <X className="h-5 w-5" />
         </Button>
@@ -65,7 +72,7 @@ export function Sidebar({
                 )}
                 onClick={() => {
                   onSelectConversation(conversation.id);
-                  setIsMobileOpen(false);
+                  handleMobileOpenChange(false);
                 }}
               >
                 <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -123,7 +130,7 @@ export function Sidebar({
         variant="ghost"
         size="icon"
         className="fixed top-3 left-3 z-50 lg:hidden"
-        onClick={() => setIsMobileOpen(true)}
+        onClick={() => handleMobileOpenChange(true)}
       >
         <Menu className="h-5 w-5" />
       </Button>
@@ -132,7 +139,7 @@ export function Sidebar({
       {isMobileOpen && (
         <div
           className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm lg:hidden"
-          onClick={() => setIsMobileOpen(false)}
+          onClick={() => handleMobileOpenChange(false)}
         />
       )}
 
