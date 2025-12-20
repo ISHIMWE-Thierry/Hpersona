@@ -180,6 +180,21 @@ const tools: OpenAI.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'get_transfer_proof',
+      description: 'Get the transfer proof image URL for a completed transaction. Use when user asks for proof, receipt, or confirmation image of their transfer.',
+      parameters: {
+        type: 'object',
+        properties: {
+          transactionId: { type: 'string', description: 'The transaction ID to get proof for' },
+          userId: { type: 'string', description: 'Optional user ID' },
+        },
+        required: ['transactionId'],
+      },
+    },
+  },
 ];
 
 // Handle function calls from AI (userInfo passed from request, imageData for proof uploads)
@@ -516,7 +531,8 @@ async function handleFunctionCall(
       
       const statusDesc = getStatusDescription(transaction.status as any);
       
-      return JSON.stringify({
+      // Build response with transfer proof info
+      const response: any = {
         success: true,
         transactionId: transaction.id,
         status: transaction.status,
@@ -532,8 +548,16 @@ async function handleFunctionCall(
         createdAt: transaction.createdAt,
         hasTransferProof: !!transaction.adminTransferProofUrl,
         hasPaymentProof: !!transaction.paymentProofUrl,
-        message: `Transaction ${transaction.id}: ${statusDesc}. ${transaction.amount} ${transaction.currency} → ${transaction.receiveAmount} ${transaction.receiveCurrency} to ${transaction.recipientName}.${transaction.adminTransferProofUrl ? ' Transfer proof available.' : ''}`
-      });
+        message: `Transaction ${transaction.id}: ${statusDesc}. ${transaction.amount} ${transaction.currency} → ${transaction.receiveAmount} ${transaction.receiveCurrency} to ${transaction.recipientName}.`
+      };
+      
+      // Include transfer proof URL if available
+      if (transaction.adminTransferProofUrl) {
+        response.transferProofUrl = transaction.adminTransferProofUrl;
+        response.message += ' ✅ Transfer proof is available - ask me to send it!';
+      }
+      
+      return JSON.stringify(response);
     } catch (error) {
       console.error('[API] Error checking transaction status:', error);
       return JSON.stringify({ success: false, error: 'Failed to check transaction status. Please try again.' });
@@ -594,6 +618,58 @@ async function handleFunctionCall(
     } catch (error) {
       console.error('Error getting user transactions:', error);
       return JSON.stringify({ success: false, error: 'Failed to get transactions' });
+    }
+  }
+  
+  // Get transfer proof for a transaction
+  if (name === 'get_transfer_proof') {
+    try {
+      const { transactionId, userId } = args;
+      console.log('[API] get_transfer_proof called with:', { transactionId, userId });
+      
+      if (!transactionId) {
+        return JSON.stringify({
+          success: false,
+          error: 'Please provide a transaction ID.'
+        });
+      }
+      
+      const transaction = await getTransactionById(transactionId, userId);
+      
+      if (!transaction) {
+        return JSON.stringify({
+          success: false,
+          error: `Transaction "${transactionId}" not found. Please check the ID.`
+        });
+      }
+      
+      if (!transaction.adminTransferProofUrl) {
+        return JSON.stringify({
+          success: false,
+          hasProof: false,
+          transactionId: transaction.id,
+          status: transaction.status,
+          message: `No transfer proof available yet for transaction ${transaction.id}. Status: ${transaction.status}. Proof is uploaded after the transfer is completed.`
+        });
+      }
+      
+      // Return the proof URL - this will be sent as an image in WhatsApp
+      return JSON.stringify({
+        success: true,
+        hasProof: true,
+        transactionId: transaction.id,
+        status: transaction.status,
+        transferProofUrl: transaction.adminTransferProofUrl,
+        recipientName: transaction.recipientName,
+        amount: transaction.receiveAmount,
+        currency: transaction.receiveCurrency,
+        message: `Here is the transfer proof for ${transaction.receiveAmount} ${transaction.receiveCurrency} to ${transaction.recipientName}.`,
+        // Special flag for WhatsApp to send as image
+        sendAsImage: true
+      });
+    } catch (error) {
+      console.error('[API] Error getting transfer proof:', error);
+      return JSON.stringify({ success: false, error: 'Failed to get transfer proof.' });
     }
   }
   
@@ -948,6 +1024,14 @@ CUSTOMER SUPPORT RULES:
   * If pending > 24h: apologize and say admin will follow up
   * If processing: reassure them it's being handled
 - Always be empathetic and helpful with issues
+
+TRANSFER PROOF RULES (IMPORTANT):
+- When checking transaction status, if hasTransferProof is true or transferProofUrl exists → tell user "Transfer proof is available! Would you like me to send it?"
+- When user asks for "proof", "receipt", "confirmation image", "screenshot of transfer" → call get_transfer_proof with the transaction ID
+- If get_transfer_proof returns transferProofUrl → respond with: "Here's your transfer proof: [[PROOF_IMAGE:URL]]" where URL is the actual transferProofUrl
+- Example: "Here's your transfer proof: [[PROOF_IMAGE:https://storage.googleapis.com/...]]"
+- This [[PROOF_IMAGE:url]] tag will automatically send the image to the user on WhatsApp
+- If no proof available yet → tell user the transfer is still being processed
 
 RESPONSE RULES:
 - Max 1-2 sentences for simple queries
