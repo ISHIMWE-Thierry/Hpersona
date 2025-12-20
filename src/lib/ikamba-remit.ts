@@ -2688,7 +2688,8 @@ export async function getLatestUserTransaction(
 
 /**
  * Get transaction by ID - searches across all users
- * Transaction IDs are unique, so we can find them by searching
+ * Transactions are stored as: users/{userId}/transactions/{transactionId}
+ * Transaction IDs look like: "bPbIABduyuvS2jODhyy7"
  */
 export async function getTransactionById(
   transactionId: string,
@@ -2713,69 +2714,59 @@ export async function getTransactionById(
   statusHistory?: Array<{ status: string; timestamp: string }>;
 } | null> {
   try {
-    // If we have a userId, search directly in their transactions
-    if (userId) {
-      const txnRef = doc(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS, transactionId);
+    console.log('[getTransactionById] Looking for transaction:', transactionId, 'userId:', userId);
+    
+    // Clean up transaction ID (remove any whitespace)
+    const cleanTxnId = transactionId.trim();
+    
+    // If we have a userId, search directly in their transactions first
+    if (userId && !userId.startsWith('whatsapp_')) {
+      console.log('[getTransactionById] Searching in user collection:', userId);
+      const txnRef = doc(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS, cleanTxnId);
       const txnDoc = await getDoc(txnRef);
       
       if (txnDoc.exists()) {
+        console.log('[getTransactionById] Found in user collection!');
         const data = txnDoc.data();
         return formatTransactionResponse(txnDoc.id, userId, data);
       }
+      console.log('[getTransactionById] Not found in user collection, searching all users...');
     }
     
-    // Search across all users using collectionGroup
-    const transactionsQuery = query(
-      collectionGroup(db, COLLECTIONS.TRANSACTIONS),
-      where('__name__', '==', transactionId),
-      limit(1)
-    );
+    // Search across ALL users by iterating through users collection
+    // This is more reliable than collectionGroup which needs indexes
+    console.log('[getTransactionById] Searching all users for transaction...');
+    const usersRef = collection(db, COLLECTIONS.USERS);
+    const usersSnapshot = await getDocs(usersRef);
     
-    // Alternative: search by transactionId field if document ID doesn't match
-    const byIdQuery = query(
-      collectionGroup(db, COLLECTIONS.TRANSACTIONS),
-      where('transactionId', '==', transactionId),
-      limit(1)
-    );
-    
-    // Try document ID match first
-    let snapshot = await getDocs(transactionsQuery);
-    
-    if (snapshot.empty) {
-      // Try transactionId field
-      snapshot = await getDocs(byIdQuery);
-    }
-    
-    if (snapshot.empty) {
-      // Last resort: search by partial ID match in recent transactions
-      const recentQuery = query(
-        collectionGroup(db, COLLECTIONS.TRANSACTIONS),
-        orderBy('date', 'desc'),
-        limit(100)
-      );
-      const recentSnapshot = await getDocs(recentQuery);
+    for (const userDoc of usersSnapshot.docs) {
+      const userTxnRef = doc(db, COLLECTIONS.USERS, userDoc.id, COLLECTIONS.TRANSACTIONS, cleanTxnId);
+      const txnDoc = await getDoc(userTxnRef);
       
-      for (const docSnap of recentSnapshot.docs) {
-        if (docSnap.id === transactionId || 
-            docSnap.id.includes(transactionId) ||
-            docSnap.data().transactionId === transactionId) {
-          const pathParts = docSnap.ref.path.split('/');
-          const foundUserId = pathParts[1]; // users/{userId}/transactions/{txnId}
-          return formatTransactionResponse(docSnap.id, foundUserId, docSnap.data());
-        }
+      if (txnDoc.exists()) {
+        console.log('[getTransactionById] Found transaction in user:', userDoc.id);
+        return formatTransactionResponse(txnDoc.id, userDoc.id, txnDoc.data());
       }
-      
-      console.log('[getTransactionById] Transaction not found:', transactionId);
-      return null;
     }
     
-    const txnDoc = snapshot.docs[0];
-    const pathParts = txnDoc.ref.path.split('/');
-    const foundUserId = pathParts[1];
+    // Also try searching by 'id' field within transactions (some transactions store their ID as a field)
+    console.log('[getTransactionById] Trying to search by id field...');
+    for (const userDoc of usersSnapshot.docs) {
+      const txnsRef = collection(db, COLLECTIONS.USERS, userDoc.id, COLLECTIONS.TRANSACTIONS);
+      const q = query(txnsRef, where('id', '==', cleanTxnId), limit(1));
+      const snapshot = await getDocs(q);
+      
+      if (!snapshot.empty) {
+        const txnDoc = snapshot.docs[0];
+        console.log('[getTransactionById] Found by id field in user:', userDoc.id);
+        return formatTransactionResponse(txnDoc.id, userDoc.id, txnDoc.data());
+      }
+    }
     
-    return formatTransactionResponse(txnDoc.id, foundUserId, txnDoc.data());
+    console.log('[getTransactionById] Transaction not found anywhere:', cleanTxnId);
+    return null;
   } catch (error) {
-    console.error('Error getting transaction by ID:', error);
+    console.error('[getTransactionById] Error:', error);
     return null;
   }
 }
