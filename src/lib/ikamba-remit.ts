@@ -2816,5 +2816,115 @@ function formatTransactionResponse(id: string, userId: string, data: any): {
   };
 }
 
+/**
+ * Get status emoji for transaction status
+ */
+export function getStatusEmoji(status: string): string {
+  const statusEmojis: Record<string, string> = {
+    draft: '📝',
+    pending: '⏳',
+    pending_payment: '⏳',
+    awaiting_confirmation: '🔄',
+    processing: '⚙️',
+    sent: '✈️',
+    delivered: '📬',
+    completed: '✅',
+    failed: '❌',
+    cancelled: '🚫',
+    refunded: '💰',
+  };
+  return statusEmojis[status] || '❓';
+}
+
+/**
+ * Get user transactions filtered by status
+ * @param userId - User ID to fetch transactions for
+ * @param statusFilter - Filter by status: 'pending', 'completed', 'cancelled', 'processing', or 'all'
+ * @param maxTransactions - Maximum number of transactions to return
+ */
+export async function getUserTransactionsByStatus(
+  userId: string,
+  statusFilter: 'pending' | 'completed' | 'cancelled' | 'processing' | 'all' = 'all',
+  maxTransactions: number = 10
+): Promise<Array<{
+  id: string;
+  status: string;
+  amount: number;
+  currency: string;
+  receiveAmount: number;
+  receiveCurrency: string;
+  recipientName: string;
+  recipientPhone: string;
+  date: string;
+  hasTransferProof: boolean;
+  hasPaymentProof: boolean;
+}>> {
+  try {
+    const transactionsRef = collection(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS);
+    
+    // Map filter to actual status values
+    const statusMap: Record<string, string[]> = {
+      pending: ['pending', 'pending_payment', 'awaiting_confirmation', 'draft'],
+      processing: ['processing', 'sent'],
+      completed: ['completed', 'delivered'],
+      cancelled: ['cancelled', 'failed', 'refunded'],
+      all: [],
+    };
+    
+    let q;
+    const statusValues = statusMap[statusFilter] || [];
+    
+    if (statusFilter !== 'all' && statusValues.length > 0) {
+      // Filter by status
+      q = query(
+        transactionsRef, 
+        where('status', 'in', statusValues),
+        orderBy('date', 'desc'), 
+        limit(maxTransactions)
+      );
+    } else {
+      // Get all transactions
+      q = query(transactionsRef, orderBy('date', 'desc'), limit(maxTransactions));
+    }
+    
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) return [];
+    
+    return snapshot.docs.map(docSnap => {
+      const data = docSnap.data() as any;
+      let dateStr = '';
+      if (data.date?.toDate) {
+        dateStr = data.date.toDate().toISOString();
+      } else if (data.date?.seconds) {
+        dateStr = new Date(data.date.seconds * 1000).toISOString();
+      } else if (typeof data.date === 'string') {
+        dateStr = data.date;
+      } else if (data.createdAt) {
+        dateStr = typeof data.createdAt === 'string' 
+          ? data.createdAt 
+          : data.createdAt?.toDate?.()?.toISOString() || '';
+      }
+      
+      return {
+        id: docSnap.id,
+        status: data.status || data.transactionstatus || 'pending',
+        amount: data.sendAmount || data.amount || data.amountToPay || 0,
+        currency: data.fromCurrency || data.basecurrency || data.currency || 'RUB',
+        receiveAmount: data.receiveAmount || data.recivergets || 0,
+        receiveCurrency: data.toCurrency || data.transfercurrency || data.receiveCurrency || 'RWF',
+        recipientName: data.recipientName || data.recipientsfname || 'Unknown',
+        recipientPhone: data.recipientPhone || data.recipientsPhone || '',
+        date: dateStr,
+        hasTransferProof: !!data.adminTransferProofUrl,
+        hasPaymentProof: !!(data.paymentProofUrl || data.paymentProofUrls?.length),
+      };
+    });
+  } catch (error) {
+    console.error('Error getting transactions by status:', error);
+    return [];
+  }
+}
+
 // Export FEE_CONFIG for external use
 export { FEE_CONFIG };

@@ -12,6 +12,8 @@ import {
   uploadPaymentProof,
   getLatestUserTransaction,
   getUserTransactionHistory,
+  getUserTransactionsByStatus,
+  getStatusEmoji,
   getRecentRecipients,
   sendPaymentProofReceivedEmail,
   sendEmailToUser,
@@ -155,6 +157,26 @@ const tools: OpenAI.ChatCompletionTool[] = [
           userId: { type: 'string', description: 'Optional user ID to search within' },
         },
         required: ['transactionId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_user_transactions_by_status',
+      description: 'Get list of user transactions filtered by status. Use when user asks about their pending, completed, cancelled, or all orders.',
+      parameters: {
+        type: 'object',
+        properties: {
+          userId: { type: 'string', description: 'User ID to get transactions for' },
+          status: { 
+            type: 'string', 
+            description: 'Filter by status: pending, completed, cancelled, processing, or all',
+            enum: ['pending', 'completed', 'cancelled', 'processing', 'all']
+          },
+          limit: { type: 'number', description: 'Maximum number of transactions to return (default 10)' },
+        },
+        required: ['userId'],
       },
     },
   },
@@ -507,6 +529,63 @@ async function handleFunctionCall(
     }
   }
   
+  // Get user transactions by status
+  if (name === 'get_user_transactions_by_status') {
+    try {
+      const { userId, status = 'all', limit: maxLimit = 10 } = args;
+      
+      if (!userId) {
+        return JSON.stringify({
+          success: false,
+          error: 'User not authenticated. Please log in or verify your WhatsApp to see your transactions.'
+        });
+      }
+      
+      const transactions = await getUserTransactionsByStatus(userId, status, maxLimit);
+      
+      if (transactions.length === 0) {
+        const statusText = status === 'all' ? '' : ` ${status}`;
+        return JSON.stringify({
+          success: true,
+          count: 0,
+          transactions: [],
+          message: `You don't have any${statusText} transactions yet.`
+        });
+      }
+      
+      // Format transactions for AI
+      const formatted = transactions.map((txn, i) => {
+        const statusEmoji = getStatusEmoji(txn.status);
+        const proofNote = txn.hasTransferProof ? ' ✓ Transfer proof available' : '';
+        return {
+          index: i + 1,
+          id: txn.id,
+          status: txn.status,
+          statusEmoji,
+          amount: txn.amount,
+          currency: txn.currency,
+          receiveAmount: txn.receiveAmount,
+          receiveCurrency: txn.receiveCurrency,
+          recipientName: txn.recipientName,
+          date: txn.date,
+          hasTransferProof: txn.hasTransferProof,
+          summary: `${statusEmoji} ${txn.amount.toLocaleString()} ${txn.currency} → ${txn.receiveAmount.toLocaleString()} ${txn.receiveCurrency} to ${txn.recipientName}${proofNote}`
+        };
+      });
+      
+      const statusText = status === 'all' ? '' : ` ${status}`;
+      return JSON.stringify({
+        success: true,
+        count: transactions.length,
+        transactions: formatted,
+        message: `Found ${transactions.length}${statusText} transaction(s).`
+      });
+    } catch (error) {
+      console.error('Error getting user transactions:', error);
+      return JSON.stringify({ success: false, error: 'Failed to get transactions' });
+    }
+  }
+  
   return JSON.stringify({ error: 'Unknown function' });
 }
 
@@ -825,20 +904,41 @@ FEES: RUB→Africa: -100 RUB | Africa→RUB: -100 RUB payout | Others: 0
 DELIVERY: Mobile Money 5-30min | Bank 1-3 days
 IMPORTANT: Only offer delivery methods that exist in DELIVERY OPTIONS BY DESTINATION CURRENCY`;
 
-// MINIMAL AI Identity - ultra concise, multi-language aware
-const IKAMBA_AI_IDENTITY = `You are Ikamba AI. Be EXTREMELY BRIEF.
+// MINIMAL AI Identity - ultra concise, multi-language aware, with customer support
+const IKAMBA_AI_IDENTITY = `You are Ikamba AI - a friendly customer support assistant for Ikamba Remit. Be EXTREMELY BRIEF.
 
-LANGUAGE RULES:
-- Detect user's language from their message
-- If Kinyarwanda: respond in English but can say "Yego" (yes), "Oya" (no)
-- If Swahili (Kenya/Tanzania/Uganda): respond in English, can say "Sawa" (ok), "Asante" (thanks)
+GREETING RULES (CRITICAL - match user's style):
+- "hi" or "hello" → respond ONLY with "Hey! 👋" or "Hello! How can I help you?"
+- "hey" → "Hey! 👋"
+- "thanks" or "thank you" or "asante" → ONLY respond "You're welcome! 😊" or "Happy to help!"
+- "bye" → "Goodbye! 👋"
+- Simple greetings get simple responses - don't add extra information
+
+LANGUAGE RULES (RESPOND IN USER'S LANGUAGE):
+- If user writes in French → respond in French
+- If user writes in Kinyarwanda → respond in Kinyarwanda (e.g., "Yego", "Oya", "Murakoze")
+- If user writes in Swahili → respond in Swahili (e.g., "Sawa", "Asante", "Karibu")
+- If user writes in Russian → respond in Russian
 - Default: English
-- NEVER use hard Kinyarwanda words - always translate to English
+- For technical terms (transaction ID, amount), use English
+
+CUSTOMER SUPPORT RULES:
+- When user asks about their transactions/orders:
+  * "my orders" or "my transactions" → call get_user_transactions_by_status with status='all'
+  * "pending orders" or "waiting orders" → call get_user_transactions_by_status with status='pending'
+  * "completed orders" → call get_user_transactions_by_status with status='completed'
+  * "cancelled orders" → call get_user_transactions_by_status with status='cancelled'
+- When user gives a transaction ID → call check_transaction_status
+- When user says "my transfer is taking long" or has an issue:
+  * First ask for transaction ID if not provided
+  * Check status and provide update
+  * If pending > 24h: apologize and say admin will follow up
+  * If processing: reassure them it's being handled
+- Always be empathetic and helpful with issues
 
 RESPONSE RULES:
-- Max 1-2 sentences
+- Max 1-2 sentences for simple queries
 - No filler words
-- "hey" → "Hey!"
 - Math: use $ and $$ only
 
 DELIVERY METHOD RULES:
@@ -908,7 +1008,8 @@ REMITTANCE FLOW:
 
 TRANSACTION STATUS:
 - If user asks about their transfer status and gives a transaction ID → call check_transaction_status
-- If user asks about status without ID → check USER'S RECENT TRANSACTIONS in context
+- If user asks about their orders without ID → call get_user_transactions_by_status
+- If user asks "show my pending orders" → call get_user_transactions_by_status with status='pending'
 - If transaction has "adminTransferProofUrl" → tell them transfer proof is available
 - Show: status emoji, amount, recipient, and any available proof
 
