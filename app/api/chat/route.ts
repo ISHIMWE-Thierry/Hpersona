@@ -494,12 +494,23 @@ async function handleFunctionCall(
   if (name === 'check_transaction_status') {
     try {
       const { transactionId, userId } = args;
+      console.log('[API] check_transaction_status called with:', { transactionId, userId });
+      
+      if (!transactionId || transactionId.length < 10) {
+        return JSON.stringify({
+          success: false,
+          error: `Invalid transaction ID: "${transactionId}". Transaction IDs are usually 20+ characters like "bPbIABduyuvS2jODhyy7".`
+        });
+      }
+      
       const transaction = await getTransactionById(transactionId, userId);
+      console.log('[API] getTransactionById returned:', transaction ? 'FOUND' : 'NOT FOUND');
       
       if (!transaction) {
         return JSON.stringify({
           success: false,
-          error: `Transaction ${transactionId} not found. Please check the ID and try again.`
+          error: `Transaction "${transactionId}" not found in our system. Please double-check the ID from your confirmation email or receipt.`,
+          hint: 'Make sure you copied the complete transaction ID without any spaces or missing characters.'
         });
       }
       
@@ -524,8 +535,8 @@ async function handleFunctionCall(
         message: `Transaction ${transaction.id}: ${statusDesc}. ${transaction.amount} ${transaction.currency} → ${transaction.receiveAmount} ${transaction.receiveCurrency} to ${transaction.recipientName}.${transaction.adminTransferProofUrl ? ' Transfer proof available.' : ''}`
       });
     } catch (error) {
-      console.error('Error checking transaction status:', error);
-      return JSON.stringify({ success: false, error: 'Failed to check transaction status' });
+      console.error('[API] Error checking transaction status:', error);
+      return JSON.stringify({ success: false, error: 'Failed to check transaction status. Please try again.' });
     }
   }
   

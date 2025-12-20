@@ -2714,59 +2714,139 @@ export async function getTransactionById(
   statusHistory?: Array<{ status: string; timestamp: string }>;
 } | null> {
   try {
-    console.log('[getTransactionById] Looking for transaction:', transactionId, 'userId:', userId);
+    console.log('[getTransactionById] ========== START SEARCH ==========');
+    console.log('[getTransactionById] Looking for transaction:', transactionId);
+    console.log('[getTransactionById] User hint:', userId || 'none');
     
     // Clean up transaction ID (remove any whitespace)
     const cleanTxnId = transactionId.trim();
+    console.log('[getTransactionById] Clean ID:', cleanTxnId, 'Length:', cleanTxnId.length);
     
-    // If we have a userId, search directly in their transactions first
+    // Method 1: If we have a userId, search directly in their transactions first
     if (userId && !userId.startsWith('whatsapp_')) {
-      console.log('[getTransactionById] Searching in user collection:', userId);
-      const txnRef = doc(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS, cleanTxnId);
-      const txnDoc = await getDoc(txnRef);
-      
-      if (txnDoc.exists()) {
-        console.log('[getTransactionById] Found in user collection!');
-        const data = txnDoc.data();
-        return formatTransactionResponse(txnDoc.id, userId, data);
-      }
-      console.log('[getTransactionById] Not found in user collection, searching all users...');
-    }
-    
-    // Search across ALL users by iterating through users collection
-    // This is more reliable than collectionGroup which needs indexes
-    console.log('[getTransactionById] Searching all users for transaction...');
-    const usersRef = collection(db, COLLECTIONS.USERS);
-    const usersSnapshot = await getDocs(usersRef);
-    
-    for (const userDoc of usersSnapshot.docs) {
-      const userTxnRef = doc(db, COLLECTIONS.USERS, userDoc.id, COLLECTIONS.TRANSACTIONS, cleanTxnId);
-      const txnDoc = await getDoc(userTxnRef);
-      
-      if (txnDoc.exists()) {
-        console.log('[getTransactionById] Found transaction in user:', userDoc.id);
-        return formatTransactionResponse(txnDoc.id, userDoc.id, txnDoc.data());
+      console.log('[getTransactionById] Method 1: Direct user lookup for:', userId);
+      try {
+        const txnRef = doc(db, COLLECTIONS.USERS, userId, COLLECTIONS.TRANSACTIONS, cleanTxnId);
+        const txnDoc = await getDoc(txnRef);
+        
+        if (txnDoc.exists()) {
+          console.log('[getTransactionById] ✅ FOUND in user collection!');
+          return formatTransactionResponse(txnDoc.id, userId, txnDoc.data());
+        }
+        console.log('[getTransactionById] Not found in user collection');
+      } catch (e) {
+        console.log('[getTransactionById] Error in Method 1:', e);
       }
     }
     
-    // Also try searching by 'id' field within transactions (some transactions store their ID as a field)
-    console.log('[getTransactionById] Trying to search by id field...');
-    for (const userDoc of usersSnapshot.docs) {
-      const txnsRef = collection(db, COLLECTIONS.USERS, userDoc.id, COLLECTIONS.TRANSACTIONS);
-      const q = query(txnsRef, where('id', '==', cleanTxnId), limit(1));
+    // Method 2: Use collectionGroup to search by DOCUMENT ID
+    console.log('[getTransactionById] Method 2: CollectionGroup search by doc ID...');
+    try {
+      const txnsGroupRef = collectionGroup(db, COLLECTIONS.TRANSACTIONS);
+      const groupSnapshot = await getDocs(txnsGroupRef);
+      console.log('[getTransactionById] Total transactions in collectionGroup:', groupSnapshot.size);
+      
+      for (const txnDoc of groupSnapshot.docs) {
+        // Check if document ID matches
+        if (txnDoc.id === cleanTxnId) {
+          // Extract userId from the path: users/{userId}/transactions/{txnId}
+          const pathParts = txnDoc.ref.path.split('/');
+          const ownerUserId = pathParts[1]; // users/{userId}/transactions/{txnId}
+          console.log('[getTransactionById] ✅ FOUND via collectionGroup! User:', ownerUserId);
+          return formatTransactionResponse(txnDoc.id, ownerUserId, txnDoc.data());
+        }
+      }
+      console.log('[getTransactionById] Not found by doc ID in collectionGroup');
+    } catch (e) {
+      console.log('[getTransactionById] CollectionGroup search failed:', e);
+    }
+    
+    // Method 3: Search by 'transactionId' field using collectionGroup (blink-1 style)
+    console.log('[getTransactionById] Method 3: Search by transactionId field...');
+    try {
+      const txnsGroupRef = collectionGroup(db, COLLECTIONS.TRANSACTIONS);
+      const q = query(txnsGroupRef, where('transactionId', '==', cleanTxnId), limit(1));
       const snapshot = await getDocs(q);
       
       if (!snapshot.empty) {
         const txnDoc = snapshot.docs[0];
-        console.log('[getTransactionById] Found by id field in user:', userDoc.id);
-        return formatTransactionResponse(txnDoc.id, userDoc.id, txnDoc.data());
+        const pathParts = txnDoc.ref.path.split('/');
+        const ownerUserId = pathParts[1];
+        console.log('[getTransactionById] ✅ FOUND by transactionId field! User:', ownerUserId);
+        return formatTransactionResponse(txnDoc.id, ownerUserId, txnDoc.data());
       }
+      console.log('[getTransactionById] Not found by transactionId field');
+    } catch (e) {
+      console.log('[getTransactionById] transactionId field search failed:', e);
     }
     
-    console.log('[getTransactionById] Transaction not found anywhere:', cleanTxnId);
+    // Method 4: Check top-level transactions collection (legacy/orphaned)
+    console.log('[getTransactionById] Method 4: Top-level transactions collection...');
+    try {
+      const topLevelRef = doc(db, COLLECTIONS.TRANSACTIONS, cleanTxnId);
+      const topLevelSnap = await getDoc(topLevelRef);
+      if (topLevelSnap.exists()) {
+        console.log('[getTransactionById] ✅ FOUND in top-level transactions!');
+        const data = topLevelSnap.data();
+        const ownerUserId = data?.userId || data?.user_id || data?.user || 'unknown';
+        return formatTransactionResponse(topLevelSnap.id, ownerUserId, data);
+      }
+      console.log('[getTransactionById] Not found in top-level transactions');
+    } catch (e) {
+      console.log('[getTransactionById] Top-level search failed:', e);
+    }
+    
+    // Method 5: Iterate through all users and check their transactions
+    console.log('[getTransactionById] Method 5: Iterating all users...');
+    try {
+      const usersRef = collection(db, COLLECTIONS.USERS);
+      const usersSnapshot = await getDocs(usersRef);
+      console.log('[getTransactionById] Total users to check:', usersSnapshot.size);
+      
+      let checkedUsers = 0;
+      for (const userDoc of usersSnapshot.docs) {
+        checkedUsers++;
+        // Direct document lookup by ID
+        const userTxnRef = doc(db, COLLECTIONS.USERS, userDoc.id, COLLECTIONS.TRANSACTIONS, cleanTxnId);
+        const txnDoc = await getDoc(userTxnRef);
+        
+        if (txnDoc.exists()) {
+          console.log('[getTransactionById] ✅ FOUND in user:', userDoc.id, 'after checking', checkedUsers, 'users');
+          return formatTransactionResponse(txnDoc.id, userDoc.id, txnDoc.data());
+        }
+      }
+      console.log('[getTransactionById] Checked all', checkedUsers, 'users, not found');
+    } catch (e) {
+      console.log('[getTransactionById] Error in Method 5:', e);
+    }
+    
+    // Method 6: Search by 'id' field within all transactions
+    console.log('[getTransactionById] Method 6: Search by id field...');
+    try {
+      const usersRef = collection(db, COLLECTIONS.USERS);
+      const usersSnapshot = await getDocs(usersRef);
+      
+      for (const userDoc of usersSnapshot.docs) {
+        const txnsRef = collection(db, COLLECTIONS.USERS, userDoc.id, COLLECTIONS.TRANSACTIONS);
+        const q = query(txnsRef, where('id', '==', cleanTxnId), limit(1));
+        const snapshot = await getDocs(q);
+        
+        if (!snapshot.empty) {
+          const txnDoc = snapshot.docs[0];
+          console.log('[getTransactionById] ✅ FOUND by id field in user:', userDoc.id);
+          return formatTransactionResponse(txnDoc.id, userDoc.id, txnDoc.data());
+        }
+      }
+      console.log('[getTransactionById] Not found by id field');
+    } catch (e) {
+      console.log('[getTransactionById] Error in Method 6:', e);
+    }
+    
+    console.log('[getTransactionById] ========== NOT FOUND ==========');
+    console.log('[getTransactionById] Transaction ID not found anywhere:', cleanTxnId);
     return null;
   } catch (error) {
-    console.error('[getTransactionById] Error:', error);
+    console.error('[getTransactionById] CRITICAL ERROR:', error);
     return null;
   }
 }
