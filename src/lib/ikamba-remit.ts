@@ -2542,6 +2542,10 @@ export async function uploadPaymentProof(
 
 /**
  * Get user's transaction history (for AI context)
+ * Field mappings based on actual Firestore schema:
+ * - basecurrency = send currency, transfercurrency = receive currency
+ * - amounttopay = send amount, recivergets = receive amount
+ * - recipientsfname = recipient name, recipientsphone = recipient phone
  */
 export async function getUserTransactionHistory(
   userId: string, 
@@ -2565,22 +2569,39 @@ export async function getUserTransactionHistory(
     
     if (snapshot.empty) return [];
     
+    // Helper to parse string amounts like "10,000.00 RWF" or "406"
+    const parseAmount = (val: any): number => {
+      if (typeof val === 'number') return val;
+      if (typeof val === 'string') {
+        const cleaned = val.replace(/[^0-9.-]/g, '');
+        return parseFloat(cleaned) || 0;
+      }
+      return 0;
+    };
+    
     return snapshot.docs.map(docSnap => {
       const data = docSnap.data();
       let dateStr = '';
       if (data.date?.toDate) {
         dateStr = data.date.toDate().toISOString();
-      } else if (data.createdAt) {
+      } else if (data.date?.seconds) {
+        dateStr = new Date(data.date.seconds * 1000).toISOString();
+      } else if (data.createdAt?.toDate) {
+        dateStr = data.createdAt.toDate().toISOString();
+      } else if (typeof data.createdAt === 'string') {
         dateStr = data.createdAt;
       }
       
       return {
         id: docSnap.id,
-        recipientName: data.recipientName || data.recipientsfname || 'Unknown',
-        amount: data.sendAmount || 0,
-        currency: data.fromCurrency || data.basecurrency || 'RUB',
-        receiveAmount: data.receiveAmount || data.recivergets || 0,
-        receiveCurrency: data.toCurrency || data.transfercurrency || 'RWF',
+        // recipientsfname is the actual field name in Firestore
+        recipientName: data.recipientsfname || data.recipientName || 'Unknown',
+        // basecurrency is the SEND currency, amounttopay is the send amount
+        amount: parseAmount(data.amounttopay) || parseAmount(data.amounttosendminusfee) || data.sendAmount || 0,
+        currency: data.basecurrency || data.fromCurrency || 'RWF',
+        // transfercurrency is the RECEIVE currency, recivergets is the receive amount
+        receiveAmount: parseAmount(data.recivergets) || data.receiveAmount || 0,
+        receiveCurrency: data.transfercurrency || data.toCurrency || 'RUB',
         status: data.status || data.transactionstatus || 'pending',
         date: dateStr,
         hasProof: !!(data.paymentProofUrl || data.paymentProofUrls?.length),
@@ -2761,6 +2782,16 @@ export async function getTransactionById(
 
 /**
  * Format transaction data for AI response
+ * Field mappings based on actual Firestore schema:
+ * - basecurrency (string like "RWF") - the send currency
+ * - transfercurrency (string like "RUB") - the receive currency
+ * - amounttopay (string like "10,000.00 RWF") - amount to pay
+ * - recivergets (string like "406") - receive amount
+ * - recipientsfname (string) - recipient first name
+ * - recipientsphone (string) - recipient phone
+ * - transfermethod (string like "VTB") - delivery method
+ * - modeofpayment (string) - payment method
+ * - paymentMethodSelected (string like "MTN Momo Rwanda")
  */
 function formatTransactionResponse(id: string, userId: string, data: any): {
   id: string;
@@ -2789,27 +2820,40 @@ function formatTransactionResponse(id: string, userId: string, data: any): {
     createdAt = new Date(data.date.seconds * 1000).toISOString();
   } else if (typeof data.date === 'string') {
     createdAt = data.date;
-  } else if (data.createdAt) {
-    createdAt = typeof data.createdAt === 'string' 
-      ? data.createdAt 
-      : data.createdAt?.toDate?.()?.toISOString() || '';
+  } else if (data.createdAt?.toDate) {
+    createdAt = data.createdAt.toDate().toISOString();
+  } else if (typeof data.createdAt === 'string') {
+    createdAt = data.createdAt;
   }
+  
+  // Parse amounts - handle string values like "10,000.00 RWF" or "406"
+  const parseAmount = (val: any): number => {
+    if (typeof val === 'number') return val;
+    if (typeof val === 'string') {
+      // Remove currency code and commas, parse as float
+      const cleaned = val.replace(/[^0-9.-]/g, '');
+      return parseFloat(cleaned) || 0;
+    }
+    return 0;
+  };
   
   return {
     id,
     userId,
-    status: data.status || 'pending',
-    amount: data.amount || data.amountToPay || 0,
-    currency: data.currency || data.baseCurrency || 'RUB',
-    receiveAmount: data.receiveAmount || data.receiverGets || 0,
-    receiveCurrency: data.receiveCurrency || data.transferCurrency || 'RWF',
-    recipientName: data.recipientName || data.recipientsfname || '',
-    recipientPhone: data.recipientPhone || data.recipientsPhone || '',
-    deliveryMethod: data.deliveryMethod || data.transfermethod || '',
-    provider: data.provider || data.mobileProvider || '',
-    bank: data.bank || data.recipientBank || '',
+    status: data.status || data.transactionstatus || 'pending',
+    // basecurrency is the SEND currency (what user sends)
+    amount: parseAmount(data.amounttopay) || parseAmount(data.amounttosendminusfee) || data.sendAmount || data.amount || 0,
+    currency: data.basecurrency || data.fromCurrency || data.currency || 'RWF',
+    // transfercurrency is the RECEIVE currency (what recipient gets)
+    receiveAmount: parseAmount(data.recivergets) || data.receiveAmount || 0,
+    receiveCurrency: data.transfercurrency || data.toCurrency || data.receiveCurrency || 'RUB',
+    recipientName: data.recipientsfname || data.recipientName || '',
+    recipientPhone: data.recipientsphone || data.recipientPhone || '',
+    deliveryMethod: data.transfermethod || data.deliveryMethod || '',
+    provider: data.paymentMethodSelected || data.mobileProvider || data.provider || '',
+    bank: data.recipientbankacc ? `Account: ${data.recipientbankacc}` : data.bank || data.recipientBank || '',
     createdAt,
-    updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt || '',
+    updatedAt: data.updatedAt || '',
     adminTransferProofUrl: data.adminTransferProofUrl || '',
     paymentProofUrl: data.paymentProofUrl || '',
     statusHistory: data.statusHistory || [],
@@ -2838,6 +2882,10 @@ export function getStatusEmoji(status: string): string {
 
 /**
  * Get user transactions filtered by status
+ * Field mappings based on actual Firestore schema:
+ * - basecurrency = send currency, transfercurrency = receive currency
+ * - amounttopay = send amount, recivergets = receive amount
+ * - recipientsfname = recipient name, recipientsphone = recipient phone
  * @param userId - User ID to fetch transactions for
  * @param statusFilter - Filter by status: 'pending', 'completed', 'cancelled', 'processing', or 'all'
  * @param maxTransactions - Maximum number of transactions to return
@@ -2891,6 +2939,16 @@ export async function getUserTransactionsByStatus(
     
     if (snapshot.empty) return [];
     
+    // Helper to parse string amounts like "10,000.00 RWF" or "406"
+    const parseAmount = (val: any): number => {
+      if (typeof val === 'number') return val;
+      if (typeof val === 'string') {
+        const cleaned = val.replace(/[^0-9.-]/g, '');
+        return parseFloat(cleaned) || 0;
+      }
+      return 0;
+    };
+    
     return snapshot.docs.map(docSnap => {
       const data = docSnap.data() as any;
       let dateStr = '';
@@ -2900,21 +2958,24 @@ export async function getUserTransactionsByStatus(
         dateStr = new Date(data.date.seconds * 1000).toISOString();
       } else if (typeof data.date === 'string') {
         dateStr = data.date;
-      } else if (data.createdAt) {
-        dateStr = typeof data.createdAt === 'string' 
-          ? data.createdAt 
-          : data.createdAt?.toDate?.()?.toISOString() || '';
+      } else if (data.createdAt?.toDate) {
+        dateStr = data.createdAt.toDate().toISOString();
+      } else if (typeof data.createdAt === 'string') {
+        dateStr = data.createdAt;
       }
       
       return {
         id: docSnap.id,
         status: data.status || data.transactionstatus || 'pending',
-        amount: data.sendAmount || data.amount || data.amountToPay || 0,
-        currency: data.fromCurrency || data.basecurrency || data.currency || 'RUB',
-        receiveAmount: data.receiveAmount || data.recivergets || 0,
-        receiveCurrency: data.toCurrency || data.transfercurrency || data.receiveCurrency || 'RWF',
-        recipientName: data.recipientName || data.recipientsfname || 'Unknown',
-        recipientPhone: data.recipientPhone || data.recipientsPhone || '',
+        // basecurrency is the SEND currency, amounttopay is the send amount
+        amount: parseAmount(data.amounttopay) || parseAmount(data.amounttosendminusfee) || data.sendAmount || data.amount || 0,
+        currency: data.basecurrency || data.fromCurrency || data.currency || 'RWF',
+        // transfercurrency is the RECEIVE currency, recivergets is the receive amount
+        receiveAmount: parseAmount(data.recivergets) || data.receiveAmount || 0,
+        receiveCurrency: data.transfercurrency || data.toCurrency || data.receiveCurrency || 'RUB',
+        // recipientsfname is the actual field name
+        recipientName: data.recipientsfname || data.recipientName || 'Unknown',
+        recipientPhone: data.recipientsphone || data.recipientPhone || '',
         date: dateStr,
         hasTransferProof: !!data.adminTransferProofUrl,
         hasPaymentProof: !!(data.paymentProofUrl || data.paymentProofUrls?.length),
