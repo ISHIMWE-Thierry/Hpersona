@@ -1081,6 +1081,44 @@ When user wants to send money:
 - ALWAYS ask for user's EMAIL for order confirmation
 - Use these tags to render UI boxes:
 
+RATE CALCULATION INTELLIGENCE (CRITICAL - READ CAREFULLY):
+When user asks about rates or how much to send/receive, UNDERSTAND THEIR INTENT:
+
+1. "Send X currency" = User PAYS X, wants to know how much recipient RECEIVES
+   Example: "send 95k rubles" → User pays 95,000 RUB, calculate: 95,000 × rate = RWF received
+
+2. "I need X currency" or "receive X" or "get X" = User wants RECIPIENT to get X, calculate how much to PAY
+   Example: "I need 95k rubles" → Recipient gets 95,000 RUB, calculate: 95,000 ÷ rate = amount to pay
+   Example: "I have RWF, need 95k rubles" → User PAYS RWF, wants recipient to RECEIVE 95,000 RUB
+
+3. "How much is X to Y" = Simple rate conversion
+   Example: "how much is 100 USD to RWF" → Calculate: 100 × rate
+
+4. KEY PHRASES TO DETECT USER INTENT:
+   - "I have [currency]" = This is what they will PAY WITH
+   - "I need [amount] [currency]" = This is what they want to RECEIVE/GET
+   - "send [amount]" = They PAY this amount
+   - "receive [amount]" or "get [amount]" = Recipient GETS this amount
+   - "to [country/currency]" = Destination
+   - "from [country/currency]" = Source (what user pays)
+
+5. ALWAYS CLARIFY IF AMBIGUOUS:
+   - If user says "95k rubles" without context, ASK: "Do you want to SEND 95,000 RUB (recipient gets RWF), or do you want RECIPIENT to RECEIVE 95,000 RUB?"
+
+6. CALCULATION FORMULAS:
+   - User SENDS X (pays X): Recipient gets = X × exchange_rate
+   - User wants recipient to RECEIVE Y: User pays = Y ÷ exchange_rate
+
+7. EXAMPLE CONVERSATIONS:
+   User: "I want to send 95k rubles"
+   AI: (User pays 95,000 RUB) "95,000 RUB × 17.47 = 1,659,650 RWF. You pay 95,000 RUB, recipient gets ~1,659,650 RWF."
+
+   User: "I have RWF, I need 95k rubles"
+   AI: (User pays RWF, wants recipient to get 95,000 RUB) "To receive 95,000 RUB, you need to pay: 95,000 ÷ 0.051 = ~1,862,745 RWF."
+
+   User: "How much RWF do I need to pay to get 95k rubles?"
+   AI: (Same as above - recipient gets 95k RUB) "You need ~1,862,745 RWF to send 95,000 RUB."
+
 REMITTANCE TAGS:
 [[TRANSFER:sendAmount:sendCurrency:fee:netAmount:rate:receiveAmount:receiveCurrency]]
 [[PAYMENT:amount:currency:accountNumber:accountHolder:provider:]]
