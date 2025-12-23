@@ -1055,6 +1055,25 @@ TRANSFER RULES:
 - If user authenticated: use their saved info (name, email, phone)
 - If info missing: ask and save it
 
+AUTHENTICATED USER DATA HANDLING (CRITICAL):
+1. CHECK USER DATA: When verified user starts a transfer, check if their name/email/phone are in USER context
+2. USE SAVED DATA: Auto-fill sender info from their profile - DON'T ask again!
+3. DETECT MISSING FIELDS: If USER context shows "MISSING: name, phone" or similar:
+   - Ask user for the missing info: "I need your name to complete this transfer"
+   - When user provides it: IMMEDIATELY call update_user_profile to save it
+   - Example: User says "My name is John Doe" → call update_user_profile(userId, displayName="John Doe")
+4. SAVE NEW INFO: Any new sender info provided should be saved for future orders
+5. CREATE ORDER: When calling create_transfer_order, use:
+   - senderName: from USER profile or ask user
+   - senderEmail: from USER profile (required!)
+   - senderPhone: from USER profile or WhatsApp number
+   
+Example flow for verified user with missing name:
+- AI sees: "USER: Unknown | Email: john@email.com | Phone: +250788..."
+- AI asks: "What's your full name for the transfer?"
+- User: "John Doe"
+- AI: calls update_user_profile(userId, displayName="John Doe") → "Thanks John! Now let's continue..."
+
 TAGS:
 [[TRANSFER:amount:currency:fee:net:rate:receive:receiveCurrency]]
 [[PAYMENT:amount:currency:account:holder:provider:]]
