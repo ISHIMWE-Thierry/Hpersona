@@ -206,8 +206,21 @@ async function handleFunctionCall(
 ): Promise<string> {
   if (name === 'create_transfer_order') {
     try {
-      // Use logged in user info if available, otherwise use AI-provided data
+      // SECURITY CHECK: Prevent unverified WhatsApp users from creating orders
+      // Unverified WhatsApp users have userId like "whatsapp_250788..." without a real Firebase account
       const userId = userInfo?.userId || args.userId || 'guest';
+      
+      if (userId.startsWith('whatsapp_')) {
+        // This is a WhatsApp user - they should have been verified and have effectiveUserInfo
+        // If we still see whatsapp_ prefix, it means they're NOT verified
+        return JSON.stringify({
+          success: false,
+          error: 'Please verify your WhatsApp account first. Send me your email address to get started.',
+          requiresVerification: true
+        });
+      }
+      
+      // Use logged in user info if available, otherwise use AI-provided data
       const senderEmail = userInfo?.email || args.senderEmail || '';
       const senderName = args.senderName || userInfo?.displayName || 'Guest';
       // Use phone from userInfo (WhatsApp users) or from AI args
