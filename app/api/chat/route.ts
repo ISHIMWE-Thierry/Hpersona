@@ -55,17 +55,17 @@ const tools: OpenAI.ChatCompletionTool[] = [
           senderEmail: { type: 'string', description: 'Sender email address' },
           senderPhone: { type: 'string', description: 'Sender phone number (required for order updates)' },
           recipientName: { type: 'string', description: 'Recipient full name' },
-          recipientPhone: { type: 'string', description: 'Recipient phone number' },
-          recipientAccountNumber: { type: 'string', description: 'Recipient bank account (if bank transfer)' },
-          recipientBank: { type: 'string', description: 'Recipient bank name (if bank transfer)' },
-          mobileProvider: { type: 'string', description: 'Mobile money provider (MTN, Airtel, M-Pesa)' },
+          recipientPhone: { type: 'string', description: 'Recipient phone number (ONLY for mobile_money delivery, leave empty for bank)' },
+          recipientAccountNumber: { type: 'string', description: 'Recipient bank account (ONLY for bank delivery)' },
+          recipientBank: { type: 'string', description: 'Recipient bank name (ONLY for bank delivery)' },
+          mobileProvider: { type: 'string', description: 'Mobile money provider (MTN, Airtel, M-Pesa) - ONLY for mobile_money delivery' },
           fromCurrency: { type: 'string', description: 'Source currency code (e.g., RUB)' },
           toCurrency: { type: 'string', description: 'Target currency code (e.g., RWF)' },
           sendAmount: { type: 'number', description: 'Amount to send in source currency' },
-          paymentMethod: { type: 'string', description: 'How user will pay (Sberbank, Cash)' },
-          deliveryMethod: { type: 'string', description: 'How recipient gets money (mobile_money, bank)' },
+          paymentMethod: { type: 'string', description: 'How user will pay (MTN, Airtel, Sberbank, Cash)' },
+          deliveryMethod: { type: 'string', description: 'How recipient gets money (mobile_money OR bank)' },
         },
-        required: ['userId', 'senderName', 'senderPhone', 'recipientName', 'recipientPhone', 'fromCurrency', 'toCurrency', 'sendAmount', 'paymentMethod', 'deliveryMethod'],
+        required: ['userId', 'senderName', 'senderPhone', 'recipientName', 'fromCurrency', 'toCurrency', 'sendAmount', 'paymentMethod', 'deliveryMethod'],
       },
     },
   },
@@ -1103,15 +1103,23 @@ CORRECT ORDER FLOW (CRITICAL - FOLLOW THIS EXACTLY):
 1. CHECK AUTHENTICATION: If "WHATSAPP USER: ❌ NOT VERIFIED" → ask for email first!
 2. CLARIFY CURRENCIES: "Which currency are you PAYING with? And which currency should the RECIPIENT receive?"
 3. CALCULATE: Show the rate calculation
-4. COLLECT INFO: Recipient name → Delivery method (bank/mobile) → Account/phone
-5. Phone is OPTIONAL: If user says "I don't know" → skip it, don't ask again!
-6. CREATE ORDER: Call create_transfer_order FIRST (this sends emails automatically)
-7. SHOW PAYMENT: Only AFTER order is created, show where to pay
+4. COLLECT INFO: Recipient name → Delivery method (bank/mobile)
+5. IF BANK: Get bank name + account number → DO NOT ASK FOR PHONE (banks use account numbers!)
+6. IF MOBILE MONEY: Get mobile provider + phone number
+7. CREATE ORDER: Call create_transfer_order FIRST (this sends emails automatically)
+8. SHOW PAYMENT: Only AFTER order is created, show where to pay
+
+BANK vs MOBILE MONEY (CRITICAL - NEVER CONFUSE!):
+- BANK TRANSFER: User says "Zigama", "BK", "Equity", etc → Ask ONLY for account number, NOT phone!
+  → deliveryMethod="bank", recipientBank="Zigama", recipientAccountNumber="123456", recipientPhone=""
+- MOBILE MONEY: User says "MTN mobile money", "Airtel Money" → Ask ONLY for phone number, NOT account!
+  → deliveryMethod="mobile_money", mobileProvider="MTN", recipientPhone="0789123456", recipientAccountNumber=""
 
 CONTEXT MEMORY (MAX PRIORITY):
 - NEVER forget what user already told you
 - NEVER re-ask for: amount, recipient name, bank, account number, payment method
-- If user says "I don't know" for phone → SKIP IT, set recipientPhone as empty
+- If user gives bank account → DO NOT ask for phone!
+- If user gives mobile money phone → DO NOT ask for bank account!
 - Track all collected info throughout conversation
 
 CURRENCY CLARIFICATION (ASK THIS FIRST!):
@@ -1171,9 +1179,16 @@ User: "MTN"
 AI: *calls create_transfer_order* → "✅ Order created! Pay 5,000 RUB to MTN: 0796881028. Send screenshot when done!"
 
 DON'T ASK FOR:
-❌ Recipient phone if user says "I don't know" - SKIP IT
+❌ Recipient phone when user gave BANK account number (banks don't use phones!)
+❌ Bank account when user chose mobile money (mobile uses phone numbers!)
 ❌ Re-confirmation of info already given
 ❌ Amount again after user already said it
+❌ Same information twice ever
+
+IMAGE HANDLING (PAYMENT PROOFS):
+When user uploads an image after you showed payment details:
+→ Immediately call upload_payment_proof - DO NOT describe the image
+→ The system will process it automatically
 
 TRANSACTION STATUS:
 - If user asks about their transfer status and gives a transaction ID → call check_transaction_status
