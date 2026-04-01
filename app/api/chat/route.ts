@@ -35,10 +35,13 @@ import {
   CURRENCY_TO_COUNTRY
 } from '@/lib/ikamba-remit';
 
-// OpenAI GPT-4.1 for all AI tasks
+// NVIDIA Kimi K2.5 via OpenAI-compatible API (free tier)
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.NVIDIA_API_KEY || process.env.OPENAI_API_KEY,
+  baseURL: 'https://integrate.api.nvidia.com/v1',
 });
+
+const AI_MODEL = 'moonshotai/kimi-k2.5';
 
 // Tools/Functions for OpenAI to call
 const tools: OpenAI.ChatCompletionTool[] = [
@@ -1421,12 +1424,12 @@ Transfer is being processed. You will receive confirmation shortly.`;
       }
     }
 
-    // Always use OpenAI GPT-4.1 for all AI tasks
-    console.log(`[AI Selection] Using OpenAI (gpt-4.1) for ${isWhatsAppUser ? 'WhatsApp' : 'Web'} user`);
+    // Always use NVIDIA Kimi K2.5 for all AI tasks (free tier)
+    console.log(`[AI Selection] Using NVIDIA Kimi K2.5 for ${isWhatsAppUser ? 'WhatsApp' : 'Web'} user`);
 
     // First call - check if AI wants to use tools
     const initialResponse = await openai.chat.completions.create({
-      model: 'gpt-4.1',
+      model: AI_MODEL,
       messages: messagesWithSystem,
       tools: tools,
       tool_choice: 'auto',
@@ -1464,7 +1467,7 @@ Transfer is being processed. You will receive confirmation shortly.`;
       
       // Get final response after function execution
       const finalResponse = await openai.chat.completions.create({
-        model: 'gpt-4.1',
+        model: AI_MODEL,
         messages: messagesWithSystem,
         temperature: 0,
         stream: true,
@@ -1528,7 +1531,7 @@ Transfer is being processed. You will receive confirmation shortly.`;
 
     // No function call - stream the initial response
     const streamingResponse = await openai.chat.completions.create({
-      model: 'gpt-4.1',
+      model: AI_MODEL,
       messages: messagesWithSystem,
       temperature: 0,
       stream: true,
@@ -1589,7 +1592,7 @@ Transfer is being processed. You will receive confirmation shortly.`;
       },
     });
   } catch (error: any) {
-    console.error('OpenAI API error:', error);
+    console.error('AI API error:', error);
     return new Response(
       JSON.stringify({ error: error.message || 'Internal server error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
