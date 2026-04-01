@@ -35,13 +35,13 @@ import {
   CURRENCY_TO_COUNTRY
 } from '@/lib/ikamba-remit';
 
-// NVIDIA Kimi K2.5 via OpenAI-compatible API (free tier)
+// NVIDIA Llama 3.3 70B via OpenAI-compatible API (free tier)
 const openai = new OpenAI({
   apiKey: process.env.NVIDIA_API_KEY || process.env.OPENAI_API_KEY,
   baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
-const AI_MODEL = 'moonshotai/kimi-k2.5';
+const AI_MODEL = 'meta/llama-3.3-70b-instruct';
 
 // Tools/Functions for OpenAI to call
 const tools: OpenAI.ChatCompletionTool[] = [
@@ -1424,8 +1424,8 @@ Transfer is being processed. You will receive confirmation shortly.`;
       }
     }
 
-    // Always use NVIDIA Kimi K2.5 for all AI tasks (free tier)
-    console.log(`[AI Selection] Using NVIDIA Kimi K2.5 for ${isWhatsAppUser ? 'WhatsApp' : 'Web'} user`);
+    // Always use NVIDIA Llama 3.3 70B for all AI tasks (free tier)
+    console.log(`[AI Selection] Using NVIDIA Llama 3.3 70B for ${isWhatsAppUser ? 'WhatsApp' : 'Web'} user`);
 
     // First call - check if AI wants to use tools
     const initialResponse = await openai.chat.completions.create({
