@@ -1427,28 +1427,56 @@ Transfer is being processed. You will receive confirmation shortly.`;
     // Always use NVIDIA Llama 3.3 70B for all AI tasks (free tier)
     console.log(`[AI Selection] Using NVIDIA Llama 3.3 70B for ${isWhatsAppUser ? 'WhatsApp' : 'Web'} user`);
 
-    // First call - check if AI wants to use tools
+    // Single streaming call — accumulate to check for tool calls, then either
+    // process tools and do a second streaming call, or forward directly to client.
+    // This avoids the non-streaming first call that was timing out on NVIDIA's API.
     const initialResponse = await openai.chat.completions.create({
       model: AI_MODEL,
       messages: messagesWithSystem,
       tools: tools,
       tool_choice: 'auto',
       temperature: 0,
+      stream: true,
+      max_tokens: 4096,
     });
 
-    const initialChoice = initialResponse.choices[0];
-    
+    // Accumulate the streamed response to detect tool calls
+    let accumulatedContent = '';
+    let accumulatedToolCalls: any[] = [];
+    let finishReason = '';
+
+    for await (const chunk of initialResponse) {
+      const delta = chunk.choices[0]?.delta;
+      if (delta?.content) {
+        accumulatedContent += delta.content;
+      }
+      if (delta?.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          if (!accumulatedToolCalls[idx]) {
+            accumulatedToolCalls[idx] = { id: tc.id || '', function: { name: '', arguments: '' } };
+          }
+          if (tc.id) accumulatedToolCalls[idx].id = tc.id;
+          if (tc.function?.name) accumulatedToolCalls[idx].function.name += tc.function.name;
+          if (tc.function?.arguments) accumulatedToolCalls[idx].function.arguments += tc.function.arguments;
+        }
+      }
+      if (chunk.choices[0]?.finish_reason) {
+        finishReason = chunk.choices[0].finish_reason;
+      }
+    }
+
+    // Filter out empty tool calls (NVIDIA sometimes returns tool_calls: [])
+    accumulatedToolCalls = accumulatedToolCalls.filter(tc => tc && tc.function?.name);
+
     // Check if AI wants to call a function
-    if (initialChoice.finish_reason === 'tool_calls' && initialChoice.message.tool_calls) {
-      const toolCalls = initialChoice.message.tool_calls;
+    if (accumulatedToolCalls.length > 0) {
       const toolResults: any[] = [];
       
       // Process each tool call
-      for (const toolCall of toolCalls) {
-        // Handle both standard and custom tool call types
-        const tc = toolCall as any;
-        const functionName = tc.function?.name || tc.name;
-        const functionArgs = JSON.parse(tc.function?.arguments || tc.arguments || '{}');
+      for (const toolCall of accumulatedToolCalls) {
+        const functionName = toolCall.function?.name;
+        const functionArgs = JSON.parse(toolCall.function?.arguments || '{}');
         
         console.log(`AI calling function: ${functionName}`, functionArgs);
         
@@ -1461,8 +1489,9 @@ Transfer is being processed. You will receive confirmation shortly.`;
         });
       }
       
-      // Add assistant message with tool calls and tool results
-      messagesWithSystem.push(initialChoice.message);
+      // Build the assistant message with tool calls for the conversation
+      const assistantMsg: any = { role: 'assistant', content: accumulatedContent || null, tool_calls: accumulatedToolCalls };
+      messagesWithSystem.push(assistantMsg);
       messagesWithSystem.push(...toolResults);
       
       // Get final response after function execution
@@ -1471,6 +1500,7 @@ Transfer is being processed. You will receive confirmation shortly.`;
         messages: messagesWithSystem,
         temperature: 0,
         stream: true,
+        max_tokens: 4096,
       });
       
       // Stream the final response with malformed tag fixing
@@ -1529,58 +1559,15 @@ Transfer is being processed. You will receive confirmation shortly.`;
       });
     }
 
-    // No function call - stream the initial response
-    const streamingResponse = await openai.chat.completions.create({
-      model: AI_MODEL,
-      messages: messagesWithSystem,
-      temperature: 0,
-      stream: true,
-    });
-
-    // Create a streaming response with malformed tag fixing
+    // No function call — we already accumulated the content from the streamed first call.
+    // Fix any malformed tags and return it as an SSE stream.
+    const fixedContent = fixMalformedTransferTag(accumulatedContent);
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          let buffer = '';
-          let isBufferingTag = false;
-          
-          for await (const chunk of streamingResponse) {
-            const content = chunk.choices[0]?.delta?.content || '';
-            if (content) {
-              buffer += content;
-              
-              // Check if we're starting a tag
-              if (buffer.includes('[[') && !buffer.includes(']]')) {
-                isBufferingTag = true;
-                // Don't send yet - wait for complete tag
-                continue;
-              }
-              
-              // Check if buffer contains a complete tag
-              if (buffer.includes('[[') && buffer.includes(']]')) {
-                // Fix malformed tags before sending
-                buffer = fixMalformedTransferTag(buffer);
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
-                buffer = '';
-                isBufferingTag = false;
-              } else if (!isBufferingTag) {
-                // No tag - send content directly
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
-                buffer = '';
-              }
-            }
-          }
-          // Send any remaining buffer
-          if (buffer) {
-            buffer = fixMalformedTransferTag(buffer);
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
-          }
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          controller.close();
-        } catch (error) {
-          controller.error(error);
-        }
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: fixedContent })}\n\n`));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
       },
     });
 
