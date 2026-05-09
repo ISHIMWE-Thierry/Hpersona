@@ -1,0 +1,405 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function txnOwnerMatches(data) {
+      return isSignedIn() && (
+        data.userId == request.auth.uid ||
+        data.user_id == request.auth.uid ||
+        data.user == request.auth.uid
+      );
+    }
+
+    // Staff = admin or agent — full access to the entire database.
+    function isStaff() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'agent' ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // STAFF FULL ACCESS
+    // ══════════════════════════════════════════════════════════════════════
+    match /{document=**} {
+      allow read, write: if isStaff();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // REGULAR USER RULES
+    // ══════════════════════════════════════════════════════════════════════
+
+    match /rates/{rateId} {
+      allow read: if true;
+    }
+
+    match /clientLogs/{logId} {
+      allow read: if false;
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    match /auditEvents/{eventId} {
+      allow read: if false;
+      allow write: if false;
+    }
+
+    match /alertThrottle/{key} {
+      allow read, write: if false;
+    }
+
+    match /users/{userId} {
+      allow read:   if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
+      allow delete: if false;
+
+      match /transactions/{txId} {
+        allow read:   if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId);
+        allow delete: if false;
+      }
+
+      match /automations/{automationId} {
+        allow read:   if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId);
+        allow delete: if isOwner(userId);
+
+        match /logs/{logId} {
+          allow read: if isOwner(userId);
+          allow write: if false;
+        }
+      }
+
+      match /locationHistory/{entryId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    match /transactions/{txId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn()
+                    && resource.data.userId == request.auth.uid
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['paymentProofUrl', 'paymentProofUrls', 'transactionstatus', 'updatedAt', 'updatedBy']);
+      allow delete: if false;
+    }
+
+    match /pending_transactions/{txId} {
+      allow read:   if txnOwnerMatches(resource.data);
+      allow create: if txnOwnerMatches(request.resource.data);
+      allow update: if txnOwnerMatches(resource.data) && txnOwnerMatches(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /{path=**}/transactions/{txId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /{path=**}/automations/{automationId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /bars/{userId} {
+      allow read:           if isOwner(userId);
+      allow create, update: if isOwner(userId);
+      allow delete:         if false;
+    }
+
+    match /barsHistory/{entryId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /deposits/{depositId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /depositSessions/{sessionId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /barsSettings/{docId} {
+      allow read:  if isSignedIn();
+      allow write: if false;
+    }
+
+    match /feedback/{feedbackId} {
+      allow create: if isSignedIn();
+      allow read, update, delete: if false;
+    }
+
+    match /wallets/{walletId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.currency == resource.data.currency
+        && request.resource.data.walletAddress == resource.data.walletAddress
+        && request.resource.data.balance >= 0
+        && request.resource.data.reservedBalance >= 0;
+      allow delete: if false;
+    }
+
+    match /walletHistory/{entryId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if false;
+      allow update, delete: if false;
+    }
+
+    match /walletSettings/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /recipients/{recipientId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /kyc_documents/{docId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    match /kycDocuments/{docId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    match /paymentProofs/{proofId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    match /rateAdjustments/{docId} { allow read: if true; }
+    match /currencies/{currencyId} { allow read: if true; }
+    match /feeConfigs/{feeId}       { allow read: if true; }
+    match /deliveryOptions/{docId}  { allow read: if true; }
+    match /currencyPairs/{docId}    { allow read: if true; }
+    match /paymentMethods/{methodId}{ allow read: if true; }
+
+    match /notification_recipients/{recipientId} {
+      allow read: if isSignedIn();
+    }
+
+    match /appdata/{docId} {
+      allow read:  if true;
+      allow write: if isStaff();
+      match /{sub=**} {
+        allow read: if true;
+      }
+    }
+
+    match /userActivities/{activityId} {
+      allow create: if isSignedIn();
+    }
+
+    match /pageAnalytics/{docId} {
+      allow read:  if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    match /wrapped_analytics/{entryId} {
+      allow create: if isSignedIn();
+      allow read, update, delete: if false;
+    }
+
+    match /wrappers/{wrapperId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn()
+                    && resource.data.userId == request.auth.uid
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['viewed', 'viewedAt']);
+      allow create, delete: if false;
+    }
+
+    match /userPresence/{userId} {
+      allow read:  if isOwner(userId);
+      allow write: if isOwner(userId);
+      match /locationHistory/{entryId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /pageHistory/{entryId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // ── mail / mailverify — Trigger Email extension ────────────────────────
+    // Hpersona writes to /mail too (Pro activation, credit-request emails).
+    match /mail/{mailId}      { allow create: if isSignedIn(); allow read, update, delete: if false; }
+    match /mailverify/{docId} { allow create: if isSignedIn(); allow read, update, delete: if false; }
+
+    match /notification_locks/{lockId} {
+      allow read, create, update: if isSignedIn();
+      allow delete: if false;
+    }
+
+    match /email_otps/{otpId} {
+      allow create: if isSignedIn();
+      allow read, update: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow delete: if false;
+    }
+
+    match /cardholders/{cardholderId} {
+      allow read, write: if false;
+      match /transactionHistory/{txId} { allow read, write: if false; }
+      match /resetHistory/{entryId}    { allow read, write: if false; }
+    }
+
+    match /cardholderSummary/{docId} { allow read, write: if false; }
+
+    match /currencyRates/{docId} {
+      allow read:  if true;
+      allow write: if false;
+    }
+
+    match /rate/{docId} { allow read, write: if false; }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // AI MONITORING SYSTEM
+    // ══════════════════════════════════════════════════════════════════════
+
+    match /userBlocks/{blockId} {
+      allow read:  if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
+    match /aiAlerts/{alertId}        { allow read, write: if false; }
+    match /aiActions/{actionId}      { allow read, write: if false; }
+    match /aiAuditLog/{logId}        { allow read, write: if false; }
+    match /userRiskProfiles/{userId} { allow read, write: if false; }
+    match /systemHealthLog/{docId}   { allow read, write: if false; }
+    match /dailySummaries/{docId}    { allow read, write: if false; }
+    match /aiBudgetLog/{docId}       { allow read, write: if false; }
+    match /rateAdjustmentLog/{logId} { allow read, write: if false; }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // IKAMBAVPN COLLECTIONS
+    // ══════════════════════════════════════════════════════════════════════
+
+    match /app_config/{docId} { allow read: if true; }
+
+    match /vpn_orders/{orderId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn()
+                    && resource.data.userId == request.auth.uid
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['paymentProofUrl', 'status', 'updatedAt'])
+                    && (
+                         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status'])
+                         || (resource.data.status == 'pending_payment'
+                             && request.resource.data.status == 'payment_submitted')
+                       );
+      allow delete: if false;
+    }
+
+    match /vpn_plans/{planId}                { allow read: if true; }
+    match /vpn_payment_accounts/{accountId}  { allow read: if isSignedIn(); }
+
+    match /vpn_trials/{trialId} {
+      allow read:   if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn()
+                    && resource.data.userId == request.auth.uid
+                    && request.resource.data.userId == resource.data.userId
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['status', 'updatedAt', 'credentials', 'expiresAt']);
+      allow delete: if false;
+    }
+
+    match /vpn_clients/{clientId} { allow read, write: if false; }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // HPERSONA — humanizer usage, credit requests, Pro subscription orders
+    // Staff access is already covered by the staff wildcard at the top.
+    // ══════════════════════════════════════════════════════════════════════
+
+    // ── humanizerUsage/{uid} ──────────────────────────────────────────────
+    // { uid, used, limit, unlimited, proUntil?, updatedAt }
+    //
+    // Owner can read their own ledger and bump `used` (consume words).
+    // Owner CANNOT change limit / unlimited / proUntil from the client —
+    // those are admin-only, or written by the YooKassa webhook (Admin SDK).
+    match /humanizerUsage/{uid} {
+      allow read: if isOwner(uid);
+
+      allow create: if isOwner(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.used is int
+        && request.resource.data.used >= 0
+        && request.resource.data.limit is int
+        && request.resource.data.limit <= 20000
+        && request.resource.data.unlimited == false
+        && !('proUntil' in request.resource.data);
+
+      // Owner update: only `used` may grow (consumeUsage).
+      allow update: if isOwner(uid)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.limit == resource.data.limit
+        && request.resource.data.unlimited == resource.data.unlimited
+        && request.resource.data.get('proUntil', null) == resource.data.get('proUntil', null)
+        && request.resource.data.used is int
+        && request.resource.data.used >= resource.data.used;
+
+      allow delete: if false;
+    }
+
+    // ── humanizerRequests/{id} ────────────────────────────────────────────
+    // { uid, email, displayName, message, requestedLimit, status,
+    //   createdAt, decidedBy?, decidedAt? }
+    //
+    // Users create their own pending requests and read their own.
+    // Only staff can decide them.
+    match /humanizerRequests/{id} {
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.email is string
+        && request.resource.data.message is string
+        && request.resource.data.message.size() <= 2000;
+
+      allow update, delete: if false;
+    }
+
+    // ── humanizerOrders/{id} ──────────────────────────────────────────────
+    // YooKassa Pro subscription orders. ALL writes go through the Admin SDK
+    // (Vercel API routes), which bypasses these rules. Clients may only read
+    // their own to support the return-from-checkout polling flow.
+    match /humanizerOrders/{id} {
+      allow read:  if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+  }
+}
