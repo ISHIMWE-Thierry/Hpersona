@@ -153,7 +153,7 @@ export function DropdownAvatar() {
           <div className="py-1">
             <DropdownMenuItem 
               onClick={() => window.open('https://wa.me/250788123456', '_blank')} 
-              className="mx-1 gap-3 cursor-pointer text-green-600 hover:text-green-600 hover:bg-green-50 focus:text-green-600 focus:bg-green-50 dark:text-green-500 dark:hover:bg-green-950/20 dark:focus:bg-green-950/20"
+              className="mx-1 gap-3 cursor-pointer text-zinc-600 hover:text-zinc-600 hover:bg-zinc-50 focus:text-zinc-600 focus:bg-zinc-50 dark:text-zinc-500 dark:hover:bg-zinc-950/20 dark:focus:bg-zinc-950/20"
             >
               <MessageCircle className="h-4 w-4" />
               <span className="font-medium">WhatsApp Support</span>

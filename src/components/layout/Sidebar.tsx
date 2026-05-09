@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { MessageSquare, Plus, Trash2, LogOut, Menu, X, Sparkles } from 'lucide-react';
+import { MessageSquare, Plus, Trash2, LogOut, Menu, X, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -63,9 +63,9 @@ export function Sidebar({
           onClick={() => handleMobileOpenChange(false)}
           className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-all hover:bg-sidebar-accent border border-transparent hover:border-border"
         >
-          <Sparkles className="h-4 w-4 text-emerald-400" />
+          <FileText className="h-4 w-4 text-foreground" />
           <span className="flex-1">Humanize Document</span>
-          <span className="text-[10px] uppercase tracking-wider text-emerald-400/80">New</span>
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">New</span>
         </Link>
       </div>
 

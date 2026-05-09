@@ -35,13 +35,27 @@ import {
   CURRENCY_TO_COUNTRY
 } from '@/lib/ikamba-remit';
 
-// NVIDIA Llama 3.3 70B via OpenAI-compatible API (free tier)
+// OpenRouter (OpenAI-compatible). Default model: Llama 3.3 70B Instruct (free tier).
+// Set OPENROUTER_MODEL to override (e.g. "openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet").
 const openai = new OpenAI({
-  apiKey: process.env.NVIDIA_API_KEY || process.env.OPENAI_API_KEY,
-  baseURL: 'https://integrate.api.nvidia.com/v1',
+  apiKey:
+    process.env.OPENROUTER_API_KEY ||
+    process.env.NVIDIA_API_KEY ||
+    process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENROUTER_API_KEY
+    ? 'https://openrouter.ai/api/v1'
+    : 'https://integrate.api.nvidia.com/v1',
+  defaultHeaders: process.env.OPENROUTER_API_KEY
+    ? {
+        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://hpersona.app',
+        'X-Title': 'Ikamba AI',
+      }
+    : undefined,
 });
 
-const AI_MODEL = 'meta/llama-3.3-70b-instruct';
+const AI_MODEL = process.env.OPENROUTER_API_KEY
+  ? process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free'
+  : 'meta/llama-3.3-70b-instruct';
 
 // Tools/Functions for OpenAI to call
 const tools: OpenAI.ChatCompletionTool[] = [
@@ -1424,8 +1438,8 @@ Transfer is being processed. You will receive confirmation shortly.`;
       }
     }
 
-    // Always use NVIDIA Llama 3.3 70B for all AI tasks (free tier)
-    console.log(`[AI Selection] Using NVIDIA Llama 3.3 70B for ${isWhatsAppUser ? 'WhatsApp' : 'Web'} user`);
+    // Single streaming call (OpenRouter / NVIDIA — both OpenAI-compatible).
+    console.log(`[AI Selection] Using ${AI_MODEL} for ${isWhatsAppUser ? 'WhatsApp' : 'Web'} user`);
 
     // Single streaming call — accumulate to check for tool calls, then either
     // process tools and do a second streaming call, or forward directly to client.

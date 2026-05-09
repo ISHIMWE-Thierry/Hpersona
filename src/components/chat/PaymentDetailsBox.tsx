@@ -159,14 +159,14 @@ export function PaymentDetailsBox({
         </div>
 
         {/* Footer - Important reminder about payment proof */}
-        <div className="px-3 sm:px-4 py-2.5 sm:py-3 bg-amber-50 dark:bg-amber-950/30 border-t border-amber-200 dark:border-amber-900">
+        <div className="px-3 sm:px-4 py-2.5 sm:py-3 bg-zinc-50 dark:bg-zinc-950/30 border-t border-zinc-200 dark:border-zinc-900">
           <div className="flex items-start gap-2">
-            <AlertCircle className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+            <AlertCircle className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-zinc-600 dark:text-zinc-400 flex-shrink-0 mt-0.5" />
             <div className="min-w-0">
-              <p className="text-xs sm:text-sm font-medium text-amber-800 dark:text-amber-300">
+              <p className="text-xs sm:text-sm font-medium text-zinc-800 dark:text-zinc-300">
                 Upload Payment Proof
               </p>
-              <p className="text-[10px] sm:text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+              <p className="text-[10px] sm:text-xs text-zinc-700 dark:text-zinc-400 mt-0.5">
                 Send screenshot after payment to complete your transfer.
               </p>
             </div>

@@ -45,13 +45,13 @@ function CopyRefButton({ value }: { value: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="ml-2 p-1 rounded hover:bg-green-200/50 dark:hover:bg-green-800/50 transition-colors"
+      className="ml-2 p-1 rounded hover:bg-zinc-200/50 dark:hover:bg-zinc-800/50 transition-colors"
       title="Copy reference"
     >
       {copied ? (
-        <Check className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+        <Check className="h-3.5 w-3.5 text-zinc-600 dark:text-zinc-400" />
       ) : (
-        <Copy className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+        <Copy className="h-3.5 w-3.5 text-zinc-600 dark:text-zinc-400" />
       )}
     </button>
   );
@@ -74,17 +74,17 @@ export function OrderSuccessBox({
   
   return (
     <div className={cn(
-      "rounded-xl border border-green-200 dark:border-green-900 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950/30 dark:to-emerald-950/30 overflow-hidden my-2 sm:my-3 shadow-sm",
+      "rounded-xl border border-zinc-200 dark:border-zinc-900 bg-gradient-to-br from-zinc-50 to-zinc-50 dark:from-zinc-950/30 dark:to-zinc-950/30 overflow-hidden my-2 sm:my-3 shadow-sm",
       className
     )}>
       {/* Success Header - Compact on mobile */}
-      <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-3 sm:py-4 bg-green-100 dark:bg-green-900/50 border-b border-green-200 dark:border-green-800">
-        <div className="h-8 w-8 sm:h-10 sm:w-10 rounded-full bg-green-500 flex items-center justify-center flex-shrink-0">
+      <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-3 sm:py-4 bg-zinc-100 dark:bg-zinc-900/50 border-b border-zinc-200 dark:border-zinc-800">
+        <div className="h-8 w-8 sm:h-10 sm:w-10 rounded-full bg-zinc-500 flex items-center justify-center flex-shrink-0">
           <CheckCircle className="h-4 w-4 sm:h-6 sm:w-6 text-white" />
         </div>
         <div className="min-w-0">
-          <h3 className="font-semibold text-sm sm:text-base text-green-800 dark:text-green-200">Payment Proof Received!</h3>
-          <p className="text-xs sm:text-sm text-green-600 dark:text-green-400">Your transfer is being processed</p>
+          <h3 className="font-semibold text-sm sm:text-base text-zinc-800 dark:text-zinc-200">Payment Proof Received!</h3>
+          <p className="text-xs sm:text-sm text-zinc-600 dark:text-zinc-400">Your transfer is being processed</p>
         </div>
       </div>
 
@@ -94,7 +94,7 @@ export function OrderSuccessBox({
         <div className="flex items-center justify-between p-2 rounded-lg bg-white/50 dark:bg-black/20">
           <span className="text-xs sm:text-sm text-muted-foreground">Reference</span>
           <div className="flex items-center">
-            <span className="font-mono text-xs sm:text-sm font-semibold text-green-700 dark:text-green-300">{orderId}</span>
+            <span className="font-mono text-xs sm:text-sm font-semibold text-zinc-700 dark:text-zinc-300">{orderId}</span>
             <CopyRefButton value={orderId} />
           </div>
         </div>
@@ -106,9 +106,9 @@ export function OrderSuccessBox({
               <p className="text-base sm:text-lg font-bold truncate">{formattedSendAmount}</p>
               <p className="text-[10px] sm:text-xs text-muted-foreground">{currency || 'RUB'}</p>
             </div>
-            <ArrowRight className="h-4 w-4 sm:h-5 sm:w-5 text-green-500 flex-shrink-0" />
+            <ArrowRight className="h-4 w-4 sm:h-5 sm:w-5 text-zinc-500 flex-shrink-0" />
             <div className="text-center min-w-0">
-              <p className="text-base sm:text-lg font-bold text-green-600 dark:text-green-400 truncate">{formattedReceiveAmount}</p>
+              <p className="text-base sm:text-lg font-bold text-zinc-600 dark:text-zinc-400 truncate">{formattedReceiveAmount}</p>
               <p className="text-[10px] sm:text-xs text-muted-foreground">{receiveCurrency || 'RWF'}</p>
             </div>
           </div>
@@ -124,22 +124,22 @@ export function OrderSuccessBox({
 
         {/* Email Notification */}
         {senderEmail && (
-          <div className="flex items-center gap-2 text-xs sm:text-sm text-green-600 dark:text-green-400 bg-green-100/50 dark:bg-green-900/30 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2">
+          <div className="flex items-center gap-2 text-xs sm:text-sm text-zinc-600 dark:text-zinc-400 bg-zinc-100/50 dark:bg-zinc-900/30 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2">
             <Mail className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0" />
             <span className="truncate">Confirmation sent to {senderEmail}</span>
           </div>
         )}
 
         {/* Processing Time */}
-        <div className="flex items-center gap-2 text-xs sm:text-sm text-amber-600 dark:text-amber-400 bg-amber-100/50 dark:bg-amber-900/30 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2">
+        <div className="flex items-center gap-2 text-xs sm:text-sm text-zinc-600 dark:text-zinc-400 bg-zinc-100/50 dark:bg-zinc-900/30 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2">
           <Clock className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0" />
           <span>Processing: 5-30 mins for Mobile Money</span>
         </div>
       </div>
 
       {/* Footer */}
-      <div className="px-3 sm:px-4 py-2 sm:py-3 bg-green-100/50 dark:bg-green-900/30 border-t border-green-200 dark:border-green-800">
-        <p className="text-[10px] sm:text-xs text-center text-green-700 dark:text-green-300">
+      <div className="px-3 sm:px-4 py-2 sm:py-3 bg-zinc-100/50 dark:bg-zinc-900/30 border-t border-zinc-200 dark:border-zinc-800">
+        <p className="text-[10px] sm:text-xs text-center text-zinc-700 dark:text-zinc-300">
           You'll be notified when your transfer is complete
         </p>
       </div>

@@ -6,7 +6,7 @@ import {
   ArrowLeft,
   Upload,
   FileText,
-  Sparkles,
+  Wand2,
   Download,
   Loader2,
   CheckCircle2,
@@ -286,7 +286,7 @@ export default function HumanizerPage() {
                 Tool
               </p>
               <h1 className="text-lg font-semibold flex items-center gap-2">
-                <Sparkles size={18} className="text-slate-950" />
+                <Wand2 size={18} className="text-slate-950" />
                 AI Humanizer for Word Documents
               </h1>
             </div>
@@ -440,7 +440,7 @@ export default function HumanizerPage() {
               disabled={!file || isBusy || insufficientCredits}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-950 text-white font-semibold shadow-lg shadow-slate-300/20 disabled:opacity-50 disabled:cursor-not-allowed hover:-translate-y-0.5 transition"
             >
-              {isBusy ? <Loader2 className="animate-spin" size={18} /> : <Sparkles size={18} />}
+              {isBusy ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />}
               {isBusy ? 'Processing…' : 'Start humanizing'}
             </button>
             {isBusy && (
@@ -479,7 +479,7 @@ export default function HumanizerPage() {
                 <div
                   className={`h-full transition-all duration-500 ${
                     phase === 'error'
-                      ? 'bg-rose-500'
+                      ? 'bg-zinc-500'
                       : 'bg-slate-950'
                   }`}
                   style={{ width: `${progressPct}%` }}
@@ -489,14 +489,14 @@ export default function HumanizerPage() {
           )}
 
           {error && (
-            <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-200 text-sm">
+            <div className="flex items-start gap-2 p-3 rounded-xl bg-zinc-500/10 border border-zinc-500/30 text-zinc-200 text-sm">
               <AlertCircle size={18} className="mt-0.5 flex-shrink-0" />
               <span>{error}</span>
             </div>
           )}
 
           {(credits !== null && insufficientCredits) && (
-            <div className="w-full rounded-xl bg-rose-50 border border-rose-200 p-3 text-sm text-rose-700">
+            <div className="w-full rounded-xl bg-zinc-50 border border-zinc-200 p-3 text-sm text-zinc-700">
               Estimated usage exceeds your current credit balance. Increase credits or reduce the document size before running.
             </div>
           )}
@@ -572,7 +572,7 @@ function StatusCard({
 }) {
   const valueClass =
     emphasis === 'danger'
-      ? 'text-rose-600'
+      ? 'text-zinc-600'
       : emphasis === 'primary'
         ? 'text-slate-950'
         : 'text-slate-950';
@@ -585,7 +585,7 @@ function StatusCard({
 }
 
 function PhaseIcon({ phase }: { phase: ProgressUpdate['phase'] }) {
-  if (phase === 'error') return <XCircle size={16} className="text-rose-500 mt-0.5" />;
+  if (phase === 'error') return <XCircle size={16} className="text-zinc-500 mt-0.5" />;
   if (phase === 'done') return <CheckCircle2 size={16} className="text-slate-950 mt-0.5" />;
   return <Loader2 size={16} className="text-slate-600 animate-spin mt-0.5" />;
 }

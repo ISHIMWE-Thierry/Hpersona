@@ -37,7 +37,7 @@ export function CopyableValue({ label, value, suffix, className }: CopyableValue
         title="Copy"
       >
         {copied ? (
-          <Check className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-green-600" />
+          <Check className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-zinc-600" />
         ) : (
           <Copy className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-muted-foreground" />
         )}

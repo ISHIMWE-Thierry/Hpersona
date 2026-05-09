@@ -255,12 +255,12 @@ export default function Home() {
         onSelectConversation={handleSelectConversation}
         onDeleteConversation={deleteConversation}
       />
-      <main className="flex-1 flex flex-col h-screen min-h-0 overflow-hidden relative bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-900 dark:to-blue-950">
+      <main className="flex-1 flex flex-col h-screen min-h-0 overflow-hidden relative bg-background">
         {/* Fixed top header with avatar dropdown - always visible */}
-        <header className="fixed top-0 right-0 left-0 lg:left-64 flex items-center justify-center px-4 py-3 border-b border-white/20 dark:border-white/10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl backdrop-saturate-150 shadow-sm z-40">
+        <header className="fixed top-0 right-0 left-0 lg:left-64 flex items-center justify-center px-4 py-3 border-b border-border bg-background/95 backdrop-blur-xl backdrop-saturate-150 shadow-sm z-40">
           {/* Spacer for mobile menu button */}
           <div className="w-10 lg:hidden"></div>
-          <h1 className="text-lg font-semibold bg-gradient-to-r from-blue-600 to-blue-400 bg-clip-text text-transparent">Ikamba AI</h1>
+          <h1 className="text-lg font-semibold text-foreground">Ikamba AI</h1>
           <div className="absolute right-4">
             <DropdownAvatar />
           </div>

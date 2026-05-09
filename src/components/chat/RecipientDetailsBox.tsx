@@ -33,7 +33,7 @@ function CopyButton({ value, label, size = 'default' }: { value: string; label: 
     <button
       onClick={handleCopy}
       className={cn(
-        "flex items-center gap-1 rounded-md bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 transition-colors active:scale-95",
+        "flex items-center gap-1 rounded-md bg-zinc-500/10 hover:bg-zinc-500/20 text-zinc-600 dark:text-zinc-400 transition-colors active:scale-95",
         size === 'sm' ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-1 text-xs"
       )}
       title={`Copy ${label}`}
@@ -78,26 +78,26 @@ export function RecipientDetailsBox({
 
   return (
     <div className={cn(
-      "rounded-xl border border-blue-200 dark:border-blue-900 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 overflow-hidden my-2 sm:my-3 shadow-sm",
+      "rounded-xl border border-zinc-200 dark:border-zinc-900 bg-gradient-to-br from-zinc-50 to-zinc-50 dark:from-zinc-950/30 dark:to-zinc-950/30 overflow-hidden my-2 sm:my-3 shadow-sm",
       className
     )}>
       {/* Header - Collapsible on mobile */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between gap-2 px-3 sm:px-4 py-2 sm:py-2.5 bg-blue-100 dark:bg-blue-900/50 border-b border-blue-200 dark:border-blue-800 transition-colors hover:bg-blue-200/50 dark:hover:bg-blue-900/70"
+        className="w-full flex items-center justify-between gap-2 px-3 sm:px-4 py-2 sm:py-2.5 bg-zinc-100 dark:bg-zinc-900/50 border-b border-zinc-200 dark:border-zinc-800 transition-colors hover:bg-zinc-200/50 dark:hover:bg-zinc-900/70"
       >
         <div className="flex items-center gap-2">
-          <User className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-blue-600 dark:text-blue-400" />
-          <span className="text-xs sm:text-sm font-medium text-blue-800 dark:text-blue-200">Recipient Details</span>
+          <User className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-zinc-600 dark:text-zinc-400" />
+          <span className="text-xs sm:text-sm font-medium text-zinc-800 dark:text-zinc-200">Recipient Details</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] sm:text-xs text-blue-600 dark:text-blue-400 sm:hidden">
+          <span className="text-[10px] sm:text-xs text-zinc-600 dark:text-zinc-400 sm:hidden">
             {isExpanded ? 'Hide' : 'Show'}
           </span>
           {isExpanded ? (
-            <ChevronUp className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 sm:hidden" />
+            <ChevronUp className="h-3.5 w-3.5 text-zinc-600 dark:text-zinc-400 sm:hidden" />
           ) : (
-            <ChevronDown className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 sm:hidden" />
+            <ChevronDown className="h-3.5 w-3.5 text-zinc-600 dark:text-zinc-400 sm:hidden" />
           )}
         </div>
       </button>
@@ -107,12 +107,12 @@ export function RecipientDetailsBox({
         isExpanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0 sm:max-h-[500px] sm:opacity-100"
       )}>
         {/* Amount to Receive - Highlighted */}
-        <div className="p-3 sm:p-4 border-b border-blue-200 dark:border-blue-800 bg-gradient-to-r from-blue-100/50 to-transparent dark:from-blue-900/30">
+        <div className="p-3 sm:p-4 border-b border-zinc-200 dark:border-zinc-800 bg-gradient-to-r from-zinc-100/50 to-transparent dark:from-zinc-900/30">
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-[10px] sm:text-xs text-blue-600 dark:text-blue-400 mb-0.5 sm:mb-1">Recipient Will Receive</p>
-              <p className="text-xl sm:text-2xl font-bold text-blue-800 dark:text-blue-200 truncate">
-                {formatNumber(receiveAmount)} <span className="text-sm sm:text-base font-semibold text-blue-600 dark:text-blue-400">{receiveCurrency}</span>
+              <p className="text-[10px] sm:text-xs text-zinc-600 dark:text-zinc-400 mb-0.5 sm:mb-1">Recipient Will Receive</p>
+              <p className="text-xl sm:text-2xl font-bold text-zinc-800 dark:text-zinc-200 truncate">
+                {formatNumber(receiveAmount)} <span className="text-sm sm:text-base font-semibold text-zinc-600 dark:text-zinc-400">{receiveCurrency}</span>
               </p>
             </div>
             <CopyButton value={receiveAmount.replace(/,/g, '')} label="amount" />
@@ -124,7 +124,7 @@ export function RecipientDetailsBox({
           {/* Recipient Name */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex-1 min-w-0 flex items-center gap-2">
-              <User className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+              <User className="h-3.5 w-3.5 text-zinc-600 dark:text-zinc-400 flex-shrink-0" />
               <div>
                 <p className="text-[10px] sm:text-xs text-muted-foreground mb-0.5">Recipient Name</p>
                 <p className="text-sm sm:text-base font-medium truncate">{recipientName}</p>
@@ -134,13 +134,13 @@ export function RecipientDetailsBox({
           </div>
 
           {/* Phone Number - Highlighted for Mobile Money */}
-          <div className="p-2.5 sm:p-3 rounded-lg bg-white/50 dark:bg-black/20 border border-blue-200/50 dark:border-blue-800/50">
+          <div className="p-2.5 sm:p-3 rounded-lg bg-white/50 dark:bg-black/20 border border-zinc-200/50 dark:border-zinc-800/50">
             <div className="flex items-start justify-between gap-2">
               <div className="flex-1 min-w-0 flex items-center gap-2">
-                <Phone className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+                <Phone className="h-3.5 w-3.5 text-zinc-600 dark:text-zinc-400 flex-shrink-0" />
                 <div>
                   <p className="text-[10px] sm:text-xs text-muted-foreground mb-1">Phone Number</p>
-                  <p className="text-sm sm:text-base font-mono font-bold text-blue-700 dark:text-blue-300">
+                  <p className="text-sm sm:text-base font-mono font-bold text-zinc-700 dark:text-zinc-300">
                     {recipientPhone}
                   </p>
                 </div>
@@ -151,9 +151,9 @@ export function RecipientDetailsBox({
 
           {/* Delivery Method - Mobile Money or Bank */}
           {isMobileMoney && (
-            <div className="flex items-center justify-between pt-2 border-t border-blue-200/50 dark:border-blue-800/50">
+            <div className="flex items-center justify-between pt-2 border-t border-zinc-200/50 dark:border-zinc-800/50">
               <div className="flex-1 min-w-0 flex items-center gap-2">
-                <Smartphone className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+                <Smartphone className="h-3.5 w-3.5 text-zinc-600 dark:text-zinc-400 flex-shrink-0" />
                 <div>
                   <p className="text-[10px] sm:text-xs text-muted-foreground mb-0.5">Delivery via</p>
                   <p className="text-sm sm:text-base font-medium">{provider} Mobile Money</p>
@@ -164,9 +164,9 @@ export function RecipientDetailsBox({
 
           {isBank && (
             <>
-              <div className="flex items-center justify-between pt-2 border-t border-blue-200/50 dark:border-blue-800/50">
+              <div className="flex items-center justify-between pt-2 border-t border-zinc-200/50 dark:border-zinc-800/50">
                 <div className="flex-1 min-w-0 flex items-center gap-2">
-                  <Building2 className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+                  <Building2 className="h-3.5 w-3.5 text-zinc-600 dark:text-zinc-400 flex-shrink-0" />
                   <div>
                     <p className="text-[10px] sm:text-xs text-muted-foreground mb-0.5">Bank</p>
                     <p className="text-sm sm:text-base font-medium">{bank}</p>
@@ -185,7 +185,7 @@ export function RecipientDetailsBox({
 
           {/* Country */}
           {country && (
-            <div className="pt-2 border-t border-blue-200/50 dark:border-blue-800/50">
+            <div className="pt-2 border-t border-zinc-200/50 dark:border-zinc-800/50">
               <p className="text-[10px] sm:text-xs text-muted-foreground">
                 Destination: <span className="font-medium text-foreground">{country}</span>
               </p>

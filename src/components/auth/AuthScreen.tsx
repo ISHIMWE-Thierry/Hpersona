@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/contexts/AuthContext';
-import { Sparkles, Loader2, Mail, AlertCircle } from 'lucide-react';
+import { Loader2, Mail, AlertCircle, MessageSquare } from 'lucide-react';
 import { toast } from 'sonner';
 
 export function AuthScreen() {
@@ -50,8 +50,8 @@ export function AuthScreen() {
         {/* Logo & Title */}
         <div className="text-center space-y-3">
           <div className="flex justify-center">
-            <div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-lg shadow-primary/20">
-              <Sparkles className="h-8 w-8 text-white" />
+            <div className="h-16 w-16 rounded-2xl bg-foreground flex items-center justify-center shadow-lg">
+              <MessageSquare className="h-8 w-8 text-background" />
             </div>
           </div>
           <h1 className="font-display text-3xl font-bold gradient-text">
@@ -64,11 +64,11 @@ export function AuthScreen() {
 
         {/* Firebase Configuration Warning */}
         {!isFirebaseConfigured && (
-          <div className="glass rounded-2xl p-6 border border-amber-500/50 bg-amber-500/5 space-y-3">
+          <div className="glass rounded-2xl p-6 border border-border bg-muted/40 space-y-3">
             <div className="flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5" />
+              <AlertCircle className="h-5 w-5 text-foreground flex-shrink-0 mt-0.5" />
               <div className="space-y-2">
-                <h3 className="font-semibold text-amber-500">Firebase Setup Required</h3>
+                <h3 className="font-semibold text-foreground">Firebase Setup Required</h3>
                 <p className="text-sm text-muted-foreground">
                   To enable authentication, please configure your Firebase credentials in the <code className="text-xs bg-background/50 px-1.5 py-0.5 rounded">.env</code> file.
                 </p>

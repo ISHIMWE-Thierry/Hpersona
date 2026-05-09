@@ -699,7 +699,7 @@ export function OrderFlowBox({
             </div>
 
             {/* Warning */}
-            <div className="flex items-start gap-2 p-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300">
+            <div className="flex items-start gap-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-950/30 text-zinc-800 dark:text-zinc-300">
               <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
               <p className="text-xs">
                 After confirming, you'll receive payment details. Please keep them safe.

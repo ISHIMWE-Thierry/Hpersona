@@ -23,7 +23,9 @@
 
    | Variable | Value |
    |----------|-------|
-   | `OPENAI_API_KEY` | Your OpenAI API key |
+   | `OPENROUTER_API_KEY` | Your OpenRouter API key (primary chat backend) |
+   | `OPENROUTER_MODEL` | *(optional)* Override default model, e.g. `openai/gpt-4o-mini` |
+   | `OPENAI_API_KEY` | Your OpenAI API key (fallback) |
    | `UNDETECTABLE_API_KEY` | Your Undetectable.AI Humanizer API key (server-only, never expose to the browser) |
    | `NEXT_PUBLIC_FIREBASE_API_KEY` | Your Firebase API key |
    | `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | your-project.firebaseapp.com |
