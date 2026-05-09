@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { Loader2 } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, AlertCircle, Download, Trash2, FileText } from 'lucide-react';
 import {
   humanizeDocxFile,
   analyzeDocxFile,
@@ -19,6 +19,13 @@ import {
   getUsage,
   type UsageDoc,
 } from '@/lib/humanizer-usage';
+import {
+  saveHumanizedDocument,
+  listHumanizedDocuments,
+  getHumanizedBlob,
+  deleteHumanizedDocument,
+  type HumanizedHistoryMeta,
+} from '@/lib/humanizer-history';
 
 type Phase = ProgressUpdate['phase'] | 'idle';
 
@@ -64,6 +71,9 @@ export default function HumanizerPage() {
   const [usageError, setUsageError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<DocxAnalysis | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const progressSectionRef = useRef<HTMLDivElement | null>(null);
+  const liveLogRef = useRef<HTMLDivElement | null>(null);
+  const [history, setHistory] = useState<HumanizedHistoryMeta[]>([]);
 
   const [readability, setReadability] = useState('University');
   const [purpose, setPurpose] = useState('Article');
@@ -184,6 +194,28 @@ export default function HumanizerPage() {
     refreshUsage();
   }, [refreshUsage]);
 
+  // Load this user's locally-saved humanized documents so they never lose them.
+  useEffect(() => {
+    if (!user) {
+      setHistory([]);
+      return;
+    }
+    let cancelled = false;
+    listHumanizedDocuments(user.uid).then((items) => {
+      if (!cancelled) setHistory(items);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  // Auto-scroll the live log to the latest entry as it streams.
+  useEffect(() => {
+    const el = liveLogRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, [logs]);
+
   const start = async () => {
     if (!user) {
       setError('Please sign in to use the humanizer and track your word budget.');
@@ -199,6 +231,12 @@ export default function HumanizerPage() {
     setRebuildPct(0);
     setPhase('parsing');
     abortRef.current = new AbortController();
+
+    // Smoothly bring the live progress into view so the user actually sees
+    // what is happening as the run kicks off.
+    setTimeout(() => {
+      progressSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
 
     const opts: HumanizeOptions = {
       readability,
@@ -295,6 +333,23 @@ export default function HumanizerPage() {
           console.error('[humanizer] failed to consume usage', err);
         });
       }
+      // Persist to local history so the user can re-download from any
+      // previous run without losing their work.
+      if (user) {
+        try {
+          const meta = await saveHumanizedDocument({
+            uid: user.uid,
+            filename,
+            originalName: file.name,
+            sizeBytes: blob.size,
+            billableWords: report.billableWords,
+            blob,
+          });
+          setHistory((prev) => [meta, ...prev]);
+        } catch (e) {
+          console.warn('[humanizer] could not persist to local history', e);
+        }
+      }
       checkCredits();
       refreshUsage();
     } catch (err) {
@@ -324,6 +379,24 @@ export default function HumanizerPage() {
     setRebuildPct(0);
     setAnalysis(null);
     setPhase('idle');
+  };
+
+  const redownloadHistoryItem = async (id: string, filename: string) => {
+    const res = await getHumanizedBlob(id);
+    if (!res) return;
+    const url = URL.createObjectURL(res.blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || res.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const removeHistoryItem = async (id: string) => {
+    await deleteHumanizedDocument(id);
+    setHistory((prev) => prev.filter((h) => h.id !== id));
   };
 
   const progressPct = useMemo(() => {
@@ -645,24 +718,31 @@ export default function HumanizerPage() {
 
           {/* Progress */}
           {(isBusy || phase === 'done' || phase === 'error') && (
-            <div className="space-y-2">
+            <div ref={progressSectionRef} className="space-y-2 scroll-mt-24">
               <div className="flex items-center justify-between text-xs text-slate-500">
-                <span>
-                  {phase === 'parsing' && 'Reading document…'}
-                  {phase === 'chunking' && 'Splitting into sections…'}
-                  {phase === 'humanizing' && `Humanizing ${current}/${total}`}
-                  {phase === 'rebuilding' && `Rebuilding .docx… ${rebuildPct}%`}
-                  {phase === 'done' && 'Completed'}
-                  {phase === 'error' && 'Stopped'}
+                <span className="inline-flex items-center gap-2">
+                  {isBusy && <Loader2 className="animate-spin text-emerald-600" size={14} />}
+                  {phase === 'done' && <CheckCircle2 className="text-emerald-600" size={14} />}
+                  {phase === 'error' && <XCircle className="text-rose-600" size={14} />}
+                  <span>
+                    {phase === 'parsing' && 'Reading document…'}
+                    {phase === 'chunking' && 'Splitting into sections…'}
+                    {phase === 'humanizing' && `Humanizing ${current}/${total}`}
+                    {phase === 'rebuilding' && `Rebuilding .docx… ${rebuildPct}%`}
+                    {phase === 'done' && 'Completed'}
+                    {phase === 'error' && 'Stopped'}
+                  </span>
                 </span>
                 <span>{progressPct}%</span>
               </div>
-              <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
+              <div className="h-3 rounded-full bg-slate-200 overflow-hidden">
                 <div
                   className={`h-full transition-all duration-500 ${
                     phase === 'error'
-                      ? 'bg-zinc-500'
-                      : 'bg-slate-950'
+                      ? 'bg-rose-500'
+                      : phase === 'done'
+                        ? 'bg-emerald-500'
+                        : 'bg-emerald-500'
                   }`}
                   style={{ width: `${progressPct}%` }}
                 />
@@ -671,10 +751,11 @@ export default function HumanizerPage() {
           )}
 
           {error && (
-            <div className="flex items-start gap-2 p-3 rounded-xl bg-zinc-500/10 border border-zinc-500/30 text-zinc-200 text-sm">
-               <span>{error}</span>
-             </div>
-           )}
+            <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-sm">
+              <XCircle size={18} className="text-rose-600 mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
 
           {(credits !== null && insufficientCredits) && (
             <div className="w-full rounded-xl bg-zinc-50 border border-zinc-200 p-3 text-sm text-zinc-700">
@@ -684,58 +765,132 @@ export default function HumanizerPage() {
         </section>
 
         {/* Live log */}
-        {logs.length > 0 && (
+        {(isBusy || logs.length > 0) && (
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-slate-900">Live progress</h2>
-            <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4 max-h-80 overflow-y-auto space-y-2 text-sm">
-              {logs.map((l, i) => (
-                <div key={i} className="flex items-start gap-2">
-                  <PhaseIcon phase={l.phase} />
-                  <div className="flex-1">
-                    <p className="text-slate-900">{l.message}</p>
-                    {l.preview && (
-                      <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-                        <div className="p-2 rounded-lg bg-white border border-slate-200">
-                          <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
-                            Original
-                          </p>
-                          <p className="text-slate-700 line-clamp-3">{l.preview.original}…</p>
-                        </div>
-                        <div className="p-2 rounded-lg bg-slate-100 border border-slate-200">
-                          <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
-                            Humanized
-                          </p>
-                          <p className="text-slate-900 line-clamp-3">{l.preview.humanized}…</p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-slate-900 flex items-center gap-2">
+                {isBusy ? (
+                  <Loader2 className="animate-spin text-emerald-600" size={18} />
+                ) : phase === 'error' ? (
+                  <XCircle className="text-rose-600" size={18} />
+                ) : (
+                  <CheckCircle2 className="text-emerald-600" size={18} />
+                )}
+                Live progress
+              </h2>
+              {total > 0 && (
+                <span className="text-xs text-slate-500 font-medium">
+                  {phase === 'humanizing' ? `${current} / ${total} sections` : `${logs.length} events`}
+                </span>
+              )}
+            </div>
+            <div
+              ref={liveLogRef}
+              className="rounded-2xl bg-slate-50 border border-slate-200 p-5 min-h-[420px] max-h-[600px] overflow-y-auto space-y-3 text-[15px] leading-relaxed shadow-inner"
+            >
+              {logs.length === 0 && (
+                <div className="flex items-center gap-3 text-slate-500">
+                  <Loader2 className="animate-spin text-emerald-600" size={18} />
+                  <span>Warming up…</span>
                 </div>
-              ))}
+              )}
+              {logs.map((l, i) => {
+                const isLast = i === logs.length - 1;
+                return (
+                  <div key={i} className="flex items-start gap-3">
+                    <PhaseIcon phase={l.phase} active={isLast && isBusy} />
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-slate-900 ${isLast && isBusy ? 'font-medium' : ''}`}>{l.message}</p>
+                      {l.preview && (
+                        <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                          <div className="p-2 rounded-lg bg-white border border-slate-200">
+                            <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+                              Original
+                            </p>
+                            <p className="text-slate-700 line-clamp-3">{l.preview.original}…</p>
+                          </div>
+                          <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200">
+                            <p className="text-[10px] uppercase tracking-wider text-emerald-700 mb-1">
+                              Humanized
+                            </p>
+                            <p className="text-slate-900 line-clamp-3">{l.preview.humanized}…</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </section>
         )}
 
         {/* Download */}
         {phase === 'done' && downloadUrl && (
-          <section className="rounded-2xl border border-slate-200 bg-slate-50 p-6 flex flex-col md:flex-row items-center justify-between gap-4">
+          <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6 flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-               <div>
-                 <p className="font-semibold text-slate-950">Your humanized document is ready</p>
-                 <p className="text-sm text-slate-700/80">
-                   Fonts, sizes and structure preserved.
-                 </p>
-               </div>
-             </div>
-             <a
-               href={downloadUrl}
-               download={downloadName}
-               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-950 hover:bg-slate-800 text-white font-semibold shadow-lg"
-             >
+              <CheckCircle2 className="text-emerald-600" size={28} />
+              <div>
+                <p className="font-semibold text-slate-950">Your humanized document is ready</p>
+                <p className="text-sm text-slate-700/80">
+                  Fonts, sizes and structure preserved. Saved to your local history below.
+                </p>
+              </div>
+            </div>
+            <a
+              href={downloadUrl}
+              download={downloadName}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-lg"
+            >
+              <Download size={16} />
               Download {downloadName}
-             </a>
-           </section>
-         )}
+            </a>
+          </section>
+        )}
+
+        {/* Recent humanized documents (local history) */}
+        {history.length > 0 && (
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+              <FileText size={16} />
+              Your humanized documents
+              <span className="text-xs font-normal text-slate-500">
+                · saved on this device
+              </span>
+            </h2>
+            <ul className="divide-y divide-slate-200 rounded-2xl border border-slate-200 bg-white overflow-hidden">
+              {history.map((h) => (
+                <li key={h.id} className="flex items-center gap-3 px-4 py-3">
+                  <FileText size={18} className="text-slate-400 flex-shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-slate-900 truncate">
+                      {h.filename}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {new Date(h.createdAt).toLocaleString()} ·{' '}
+                      {(h.sizeBytes / 1024).toFixed(0)} KB ·{' '}
+                      {h.billableWords.toLocaleString()} words
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => redownloadHistoryItem(h.id, h.filename)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-950 text-white text-xs font-semibold hover:bg-slate-800"
+                  >
+                    <Download size={14} />
+                    Download
+                  </button>
+                  <button
+                    onClick={() => removeHistoryItem(h.id)}
+                    aria-label="Delete from history"
+                    className="p-1.5 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </main>
     </div>
   );
@@ -764,8 +919,17 @@ function StatusCard({
   );
 }
 
-function PhaseIcon({ phase }: { phase: ProgressUpdate['phase'] }) {
-  return <span className="mt-0.5 h-2.5 w-2.5 rounded-full bg-slate-400" />;
+function PhaseIcon({ phase, active }: { phase: ProgressUpdate['phase']; active?: boolean }) {
+  if (phase === 'error') {
+    return <XCircle className="mt-0.5 text-rose-500 flex-shrink-0" size={18} />;
+  }
+  if (phase === 'done') {
+    return <CheckCircle2 className="mt-0.5 text-emerald-600 flex-shrink-0" size={18} />;
+  }
+  if (active) {
+    return <Loader2 className="mt-0.5 animate-spin text-emerald-600 flex-shrink-0" size={18} />;
+  }
+  return <CheckCircle2 className="mt-0.5 text-emerald-500/70 flex-shrink-0" size={16} />;
 }
 
 function Select({
