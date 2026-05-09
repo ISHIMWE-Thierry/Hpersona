@@ -24,6 +24,7 @@
    | Variable | Value |
    |----------|-------|
    | `OPENAI_API_KEY` | Your OpenAI API key |
+   | `UNDETECTABLE_API_KEY` | Your Undetectable.AI Humanizer API key (server-only, never expose to the browser) |
    | `NEXT_PUBLIC_FIREBASE_API_KEY` | Your Firebase API key |
    | `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | your-project.firebaseapp.com |
    | `NEXT_PUBLIC_FIREBASE_DATABASE_URL` | https://your-project-default-rtdb.firebaseio.com |

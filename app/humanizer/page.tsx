@@ -17,6 +17,7 @@ import {
 import {
   humanizeDocxFile,
   analyzeDocxFile,
+  CREDIT_SAFETY_MULTIPLIER,
   type ProgressUpdate,
   type HumanizeOptions,
   type DocxAnalysis,
@@ -53,6 +54,8 @@ const MODELS = [
 export default function HumanizerPage() {
   const [file, setFile] = useState<File | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [rebuildPct, setRebuildPct] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [current, setCurrent] = useState(0);
   const [total, setTotal] = useState(0);
@@ -69,10 +72,22 @@ export default function HumanizerPage() {
   const [model, setModel] = useState('v11');
   const [chunkWords, setChunkWords] = useState(300);
 
-  const dropRef = useRef<HTMLLabelElement | null>(null);
-
-  const insufficientCredits = !!analysis && typeof credits === 'number' && analysis.billableWords > credits;
+  const insufficientCredits =
+    !!analysis && typeof credits === 'number' && analysis.billableWords > credits;
   const isBusy = phase !== 'idle' && phase !== 'done' && phase !== 'error';
+
+  const checkCredits = useCallback(async (): Promise<number | null> => {
+    try {
+      const r = await fetch('/api/humanizer/credits');
+      const d = await r.json();
+      if (!r.ok) return null;
+      const value = typeof d.credits === 'number' ? d.credits : null;
+      setCredits(value);
+      return value;
+    } catch {
+      return null;
+    }
+  }, []);
 
   const onSelectFile = useCallback((f: File | null) => {
     if (!f) return;
@@ -90,45 +105,41 @@ export default function HumanizerPage() {
 
   const handleDrop = (e: React.DragEvent<HTMLLabelElement>) => {
     e.preventDefault();
+    if (isBusy) return;
     const f = e.dataTransfer.files?.[0];
     if (f) onSelectFile(f);
   };
 
-  const analyzeFile = useCallback(async () => {
-    if (!file) {
-      setAnalysis(null);
-      return;
-    }
-    setPhase('parsing');
-    try {
-      const report = await analyzeDocxFile(file, chunkWords);
-      setAnalysis(report);
-      setError(null);
-      setPhase('idle');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(`Unable to analyze document: ${msg}`);
-      setAnalysis(null);
-      setPhase('error');
-    }
-  }, [chunkWords, file]);
-
+  // Auto-analyze on file/chunkWords change. Uses its own `analyzing` flag so
+  // it never collides with the run-time `phase` machine.
   useEffect(() => {
     if (!file || isBusy) return;
-    analyzeFile();
-  }, [analyzeFile, file, chunkWords, isBusy]);
+    let cancelled = false;
+    setAnalyzing(true);
+    analyzeDocxFile(file, chunkWords)
+      .then((report) => {
+        if (cancelled) return;
+        setAnalysis(report);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setError(`Unable to analyze document: ${msg}`);
+        setAnalysis(null);
+      })
+      .finally(() => {
+        if (!cancelled) setAnalyzing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [file, chunkWords, isBusy]);
 
-  const checkCredits = async () => {
-    try {
-      const r = await fetch('/api/humanizer/credits');
-      const d = await r.json();
-      if (r.ok) {
-        setCredits(d.credits ?? null);
-      }
-    } catch {
-      /* ignore */
-    }
-  };
+  // Auto-refresh credits when analysis arrives so the banner is never stale.
+  useEffect(() => {
+    if (analysis) checkCredits();
+  }, [analysis, checkCredits]);
 
   const start = async () => {
     if (!file) return;
@@ -137,6 +148,7 @@ export default function HumanizerPage() {
     setLogs([]);
     setCurrent(0);
     setTotal(0);
+    setRebuildPct(0);
     setPhase('parsing');
     abortRef.current = new AbortController();
 
@@ -155,20 +167,16 @@ export default function HumanizerPage() {
         setAnalysis(report);
       }
 
-      const creditData = await fetch('/api/humanizer/credits');
-      const creditJson = await creditData.json();
-      const availableCredits = creditData.ok ? creditJson.credits ?? null : null;
+      const availableCredits = await checkCredits();
       if (availableCredits === null) {
-        setCredits(null);
         setError('Unable to check credits. Please try again.');
         setPhase('error');
         return;
       }
-      setCredits(availableCredits);
 
       if (report.billableWords > availableCredits) {
         setError(
-          `Insufficient credits. Estimated usage ${report.billableWords.toLocaleString()} vs ${availableCredits.toLocaleString()} available.`
+          `Insufficient credits. Estimated usage ≈ ${report.billableWords.toLocaleString()} (input ${report.estimatedInputWords.toLocaleString()} × ${CREDIT_SAFETY_MULTIPLIER}); available ${availableCredits.toLocaleString()}.`
         );
         setPhase('error');
         return;
@@ -178,17 +186,43 @@ export default function HumanizerPage() {
         setPhase(u.phase);
         if (typeof u.current === 'number') setCurrent(u.current);
         if (typeof u.total === 'number') setTotal(u.total);
+        if (typeof u.subProgress === 'number') {
+          setRebuildPct(Math.round(u.subProgress * 100));
+        }
         setLogs((prev) => [
           ...prev,
           { ts: Date.now(), message: u.message, phase: u.phase, preview: u.preview },
         ]);
       };
 
+      // Mid-run safety: refresh credits every 5 sections so we stop early
+      // if another tab or actor consumes our balance.
+      let creditCheckCounter = 0;
+      let liveCredits = availableCredits;
+
       const { blob, filename } = await humanizeDocxFile(
         file,
         opts,
         onProgress,
-        abortRef.current.signal
+        abortRef.current.signal,
+        {
+          beforeSection: async ({ nextEstimate, consumedSoFar, sectionIndex }) => {
+            creditCheckCounter += 1;
+            // Refresh credits periodically.
+            if (creditCheckCounter % 5 === 0) {
+              const fresh = await checkCredits();
+              if (fresh !== null) liveCredits = fresh;
+            }
+            const remaining = liveCredits - consumedSoFar;
+            if (nextEstimate > remaining) {
+              setError(
+                `Stopped before section ${sectionIndex}: only ${remaining.toLocaleString()} credits remain, next section needs ≈${nextEstimate.toLocaleString()}.`
+              );
+              return false;
+            }
+            return true;
+          },
+        }
       );
       const url = URL.createObjectURL(blob);
       setDownloadUrl(url);
@@ -199,6 +233,9 @@ export default function HumanizerPage() {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
       setPhase('error');
+      // log technical detail to console only
+      if (err instanceof Error)
+        console.error('[humanizer]', (err as Error & { cause?: unknown }).cause ?? err);
     }
   };
 
@@ -216,14 +253,21 @@ export default function HumanizerPage() {
     setDownloadUrl(null);
     setCurrent(0);
     setTotal(0);
+    setRebuildPct(0);
+    setAnalysis(null);
     setPhase('idle');
   };
 
   const progressPct = useMemo(() => {
     if (phase === 'done') return 100;
+    if (phase === 'rebuilding') {
+      // Map zip rebuild into the last 10% of the bar.
+      const sectionsDone = total > 0 ? 90 : 90;
+      return Math.min(99, sectionsDone + Math.round(rebuildPct / 10));
+    }
     if (total === 0) return phase === 'idle' ? 0 : 5;
-    return Math.min(99, Math.round((current / total) * 100));
-  }, [current, total, phase]);
+    return Math.min(89, Math.round((current / total) * 90));
+  }, [current, total, phase, rebuildPct]);
 
   return (
     <div className="min-h-screen bg-white text-slate-950">
@@ -248,8 +292,13 @@ export default function HumanizerPage() {
             </div>
           </div>
           <button
-            onClick={checkCredits}
-            className="text-xs px-3 py-1.5 rounded-lg bg-slate-950 text-white border border-slate-900 hover:bg-slate-800 transition"
+            onClick={() => checkCredits()}
+            aria-label={
+              credits === null
+                ? 'Check Undetectable credits'
+                : `Refresh credits — ${credits.toLocaleString()} available`
+            }
+            className="text-xs px-3 py-1.5 rounded-lg bg-slate-950 text-white border border-slate-900 hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-400 transition"
           >
             {credits === null ? 'Check credits' : `${credits.toLocaleString()} credits`}
           </button>
@@ -263,11 +312,13 @@ export default function HumanizerPage() {
             1 · Upload your Word document
           </h2>
           <label
-            ref={dropRef}
             htmlFor="docx-input"
             onDragOver={(e) => e.preventDefault()}
             onDrop={handleDrop}
-            className={`relative flex flex-col items-center justify-center gap-3 px-6 py-12 rounded-2xl border-2 border-dashed transition cursor-pointer ${
+            aria-disabled={isBusy}
+            className={`relative flex flex-col items-center justify-center gap-3 px-6 py-12 rounded-2xl border-2 border-dashed transition ${
+              isBusy ? 'pointer-events-none opacity-60' : 'cursor-pointer'
+            } ${
               file
                 ? 'border-slate-900/50 bg-slate-100'
                 : 'border-slate-300 bg-slate-50 hover:bg-slate-100 hover:border-slate-400'
@@ -339,17 +390,42 @@ export default function HumanizerPage() {
             </div>
           </div>
 
+          {analyzing && !analysis && (
+            <div className="text-xs text-slate-600 flex items-center gap-2">
+              <Loader2 size={14} className="animate-spin" /> Analyzing document…
+            </div>
+          )}
+
           {analysis && (
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-900">
-              <p className="font-semibold mb-2">Document estimate</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="flex items-center justify-between mb-3">
+                <p className="font-semibold">Document estimate</p>
+                {typeof credits === 'number' && (
+                  <p className="text-xs text-slate-600">
+                    {credits.toLocaleString()} credits available
+                  </p>
+                )}
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <StatusCard label="Total words" value={analysis.totalWords.toLocaleString()} />
-                <StatusCard label="Billable words" value={analysis.billableWords.toLocaleString()} />
-                <StatusCard label="Paragraphs" value={analysis.paragraphs.toString()} />
-                <StatusCard label="Billable sections" value={analysis.billableSections.toString()} />
+                <StatusCard
+                  label="Words to humanize"
+                  value={analysis.estimatedInputWords.toLocaleString()}
+                />
+                <StatusCard
+                  label={`Est. credits (×${CREDIT_SAFETY_MULTIPLIER})`}
+                  value={analysis.billableWords.toLocaleString()}
+                  emphasis={insufficientCredits ? 'danger' : 'primary'}
+                />
+                <StatusCard
+                  label="Sections"
+                  value={`${analysis.billableSections} / ${analysis.sections}`}
+                />
               </div>
               <div className="mt-3 text-xs text-slate-600">
-                Estimated usage is calculated from the number of words that will be sent to the humanizer. Sections under 50 characters are skipped.
+                Undetectable.AI bills both input and output. We multiply the input words by{' '}
+                {CREDIT_SAFETY_MULTIPLIER}× as a safety margin so jobs don&apos;t fail mid-run.
+                Sections under 50 characters are skipped.
               </div>
             </div>
           )}
@@ -393,7 +469,7 @@ export default function HumanizerPage() {
                   {phase === 'parsing' && 'Reading document…'}
                   {phase === 'chunking' && 'Splitting into sections…'}
                   {phase === 'humanizing' && `Humanizing ${current}/${total}`}
-                  {phase === 'rebuilding' && 'Rebuilding .docx…'}
+                  {phase === 'rebuilding' && `Rebuilding .docx… ${rebuildPct}%`}
                   {phase === 'done' && 'Completed'}
                   {phase === 'error' && 'Stopped'}
                 </span>
@@ -485,11 +561,25 @@ export default function HumanizerPage() {
   );
 }
 
-function StatusCard({ label, value }: { label: string; value: string }) {
+function StatusCard({
+  label,
+  value,
+  emphasis,
+}: {
+  label: string;
+  value: string;
+  emphasis?: 'primary' | 'danger';
+}) {
+  const valueClass =
+    emphasis === 'danger'
+      ? 'text-rose-600'
+      : emphasis === 'primary'
+        ? 'text-slate-950'
+        : 'text-slate-950';
   return (
     <div className="rounded-2xl bg-white border border-slate-200 p-3">
       <p className="text-[11px] uppercase tracking-wider text-slate-500">{label}</p>
-      <p className="mt-2 text-lg font-semibold text-slate-950">{value}</p>
+      <p className={`mt-2 text-lg font-semibold ${valueClass}`}>{value}</p>
     </div>
   );
 }

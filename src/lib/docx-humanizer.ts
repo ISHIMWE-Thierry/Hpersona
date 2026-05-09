@@ -19,6 +19,48 @@ export interface ProgressUpdate {
   current?: number;
   total?: number;
   preview?: { original: string; humanized: string };
+  /** Optional sub-progress 0-1 for indeterminate-feeling phases (e.g. zip rebuild). */
+  subProgress?: number;
+}
+
+/**
+ * Undetectable.AI bills both input and output tokens. Output ≈ input ± buffer.
+ * 2.1× gives us a safety margin so we don't start jobs that 402 mid-run.
+ */
+export const CREDIT_SAFETY_MULTIPLIER = 2.1;
+
+/**
+ * Map raw HTTP / API errors to user-friendly messages.
+ * The original message is preserved on `error.cause` for logging.
+ */
+export function friendlyError(status: number | undefined, raw: string): Error {
+  let message = raw;
+  switch (status) {
+    case 401:
+      message = 'Humanizer rejected the API key. Please contact support.';
+      break;
+    case 402:
+      message = "We're out of humanizer credits. Please top up and try again.";
+      break;
+    case 403:
+      message = 'This account is not allowed to use the humanizer service.';
+      break;
+    case 429:
+      message = 'Too many humanizer requests right now. Please wait a moment and retry.';
+      break;
+    case 500:
+    case 502:
+    case 503:
+      message = 'The humanizer service is temporarily unavailable. Please retry shortly.';
+      break;
+    default:
+      if (raw && raw.toLowerCase().includes('insufficient')) {
+        message = "We're out of humanizer credits. Please top up and try again.";
+      }
+  }
+  const err = new Error(message);
+  (err as Error & { cause?: string }).cause = raw;
+  return err;
 }
 
 interface RunRef {
@@ -175,24 +217,34 @@ async function humanizeText(
   options: HumanizeOptions,
   signal?: AbortSignal
 ): Promise<string> {
-  // submit
-  const submitRes = await fetch('/api/humanizer/submit', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    signal,
-    body: JSON.stringify({
-      content: text,
-      readability: options.readability,
-      purpose: options.purpose,
-      strength: options.strength,
-      model: options.model,
-    }),
-  });
-  const submitData = await submitRes.json();
-  if (!submitRes.ok) {
-    throw new Error(submitData?.error || `Humanizer submit failed (${submitRes.status})`);
+  // submit, with one retry on 429.
+  let submitRes: Response | null = null;
+  let submitData: { id?: string; error?: string } = {};
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    submitRes = await fetch('/api/humanizer/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      body: JSON.stringify({
+        content: text,
+        readability: options.readability,
+        purpose: options.purpose,
+        strength: options.strength,
+        model: options.model,
+      }),
+    });
+    submitData = await submitRes.json().catch(() => ({}));
+    if (submitRes.ok) break;
+    if (submitRes.status !== 429 || attempt === 1) {
+      throw friendlyError(
+        submitRes.status,
+        submitData?.error || `Humanizer submit failed (${submitRes.status})`
+      );
+    }
+    // exponential backoff before retry
+    await new Promise((r) => setTimeout(r, 2000));
   }
-  const id: string = submitData.id;
+  const id = submitData?.id;
   if (!id) throw new Error('Humanizer did not return a document id');
 
   // poll
@@ -207,22 +259,40 @@ async function humanizeText(
       signal,
       body: JSON.stringify({ id }),
     });
-    const docData = await docRes.json();
+    const docData = await docRes.json().catch(() => ({}));
     if (!docRes.ok) {
-      throw new Error(docData?.error || `Document fetch failed (${docRes.status})`);
+      throw friendlyError(
+        docRes.status,
+        docData?.error || `Document fetch failed (${docRes.status})`
+      );
     }
     if (docData?.output && typeof docData.output === 'string' && docData.output.length > 0) {
       return docData.output as string;
     }
   }
-  throw new Error('Timed out waiting for humanizer');
+  throw new Error('Timed out waiting for humanizer.');
+}
+
+export interface RunOptions {
+  /**
+   * Called before every section. Return `false` (or throw) to abort.
+   * `nextEstimate` is the estimated credits the upcoming section will consume
+   * (input + output, with the safety multiplier already applied).
+   */
+  beforeSection?: (info: {
+    sectionIndex: number;
+    totalSections: number;
+    nextEstimate: number;
+    consumedSoFar: number;
+  }) => Promise<boolean> | boolean;
 }
 
 export async function humanizeDocxFile(
   file: File,
   options: HumanizeOptions,
   onProgress: (u: ProgressUpdate) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  runOptions: RunOptions = {}
 ): Promise<{ blob: Blob; filename: string }> {
   onProgress({ phase: 'parsing', message: 'Reading document…' });
   const buf = await file.arrayBuffer();
@@ -248,6 +318,7 @@ export async function humanizeDocxFile(
   });
 
   let processed = 0;
+  let consumedEstimate = 0;
   for (const section of sections) {
     if (signal?.aborted) throw new Error('Aborted');
     if (section.wordCount === 0 || section.text.trim().length < 50) {
@@ -255,6 +326,20 @@ export async function humanizeDocxFile(
       continue;
     }
     processed += 1;
+    const nextEstimate = Math.ceil(section.wordCount * CREDIT_SAFETY_MULTIPLIER);
+    if (runOptions.beforeSection) {
+      const cont = await runOptions.beforeSection({
+        sectionIndex: processed,
+        totalSections: meaningful.length,
+        nextEstimate,
+        consumedSoFar: consumedEstimate,
+      });
+      if (!cont) {
+        throw new Error(
+          "Stopped before consuming more credits than available. The document was not modified beyond what's already been humanized."
+        );
+      }
+    }
     onProgress({
       phase: 'humanizing',
       message: `Humanizing section ${processed} of ${meaningful.length}…`,
@@ -265,10 +350,11 @@ export async function humanizeDocxFile(
     try {
       humanized = await humanizeText(section.text, options, signal);
     } catch (err) {
-      throw new Error(
-        `Section ${processed} failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      throw err instanceof Error
+        ? err
+        : new Error(`Section ${processed} failed: ${String(err)}`);
     }
+    consumedEstimate += nextEstimate;
     const perParagraph = distributeAcrossParagraphs(section.paragraphs, humanized);
     section.paragraphs.forEach((p, i) => {
       const txt = perParagraph[i] ?? '';
@@ -286,14 +372,24 @@ export async function humanizeDocxFile(
     });
   }
 
-  onProgress({ phase: 'rebuilding', message: 'Rebuilding document…' });
+  onProgress({ phase: 'rebuilding', message: 'Rebuilding document…', subProgress: 0 });
   const serializer = new XMLSerializer();
   const newXml = serializer.serializeToString(doc);
   zip.file('word/document.xml', newXml);
-  const outBlob = await zip.generateAsync({
-    type: 'blob',
-    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  });
+  const outBlob = await zip.generateAsync(
+    {
+      type: 'blob',
+      mimeType:
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    },
+    (meta) => {
+      onProgress({
+        phase: 'rebuilding',
+        message: `Rebuilding document… ${Math.round(meta.percent)}%`,
+        subProgress: Math.min(1, meta.percent / 100),
+      });
+    }
+  );
 
   const baseName = file.name.replace(/\.docx$/i, '');
   const outName = `${baseName}-humanized.docx`;
@@ -303,7 +399,10 @@ export async function humanizeDocxFile(
 
 export interface DocxAnalysis {
   totalWords: number;
-  billableWords: number; // words that will actually be sent to humanizer
+  /** Words actually sent to the humanizer as input. */
+  estimatedInputWords: number;
+  /** Estimated credits charged (input + output, with safety buffer). */
+  billableWords: number;
   paragraphs: number;
   sections: number;
   billableSections: number;
@@ -331,18 +430,19 @@ export async function analyzeDocxFile(
   const paragraphs = extractParagraphs(doc);
   const sections = buildSections(paragraphs, targetWordsPerChunk);
   let totalWords = 0;
-  let billableWords = 0;
+  let estimatedInputWords = 0;
   let billableSections = 0;
   for (const p of paragraphs) totalWords += countWords(p.text);
   for (const s of sections) {
     if (s.wordCount > 0 && s.text.trim().length >= 50) {
-      billableWords += s.wordCount;
+      estimatedInputWords += s.wordCount;
       billableSections += 1;
     }
   }
   return {
     totalWords,
-    billableWords,
+    estimatedInputWords,
+    billableWords: Math.ceil(estimatedInputWords * CREDIT_SAFETY_MULTIPLIER),
     paragraphs: paragraphs.length,
     sections: sections.length,
     billableSections,
