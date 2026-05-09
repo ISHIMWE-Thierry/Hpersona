@@ -300,3 +300,51 @@ export async function humanizeDocxFile(
   onProgress({ phase: 'done', message: 'Ready to download.' });
   return { blob: outBlob, filename: outName };
 }
+
+export interface DocxAnalysis {
+  totalWords: number;
+  billableWords: number; // words that will actually be sent to humanizer
+  paragraphs: number;
+  sections: number;
+  billableSections: number;
+}
+
+/**
+ * Inspect a .docx and report how many words would actually be sent to the
+ * humanizer (i.e. what would be billed against your Undetectable.AI credits).
+ * Sections under 50 chars are skipped by the humanizer flow and not counted.
+ */
+export async function analyzeDocxFile(
+  file: File,
+  targetWordsPerChunk: number
+): Promise<DocxAnalysis> {
+  const buf = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
+  const docXmlFile = zip.file('word/document.xml');
+  if (!docXmlFile) throw new Error('Invalid .docx (missing word/document.xml)');
+  const xmlString = await docXmlFile.async('string');
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlString, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length > 0) {
+    throw new Error('Failed to parse document.xml');
+  }
+  const paragraphs = extractParagraphs(doc);
+  const sections = buildSections(paragraphs, targetWordsPerChunk);
+  let totalWords = 0;
+  let billableWords = 0;
+  let billableSections = 0;
+  for (const p of paragraphs) totalWords += countWords(p.text);
+  for (const s of sections) {
+    if (s.wordCount > 0 && s.text.trim().length >= 50) {
+      billableWords += s.wordCount;
+      billableSections += 1;
+    }
+  }
+  return {
+    totalWords,
+    billableWords,
+    paragraphs: paragraphs.length,
+    sections: sections.length,
+    billableSections,
+  };
+}
