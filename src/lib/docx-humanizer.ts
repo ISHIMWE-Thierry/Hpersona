@@ -4,6 +4,26 @@ import JSZip from 'jszip';
 
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
+/**
+ * Sentinel inserted between paragraphs when sending a section to the humanizer
+ * so we can re-split the humanized output back into the exact same paragraphs
+ * (preserving headings, spacing, alignment, indentation, etc.).
+ *
+ * The pilcrow + repeated rare punctuation is unlikely to be reformatted by
+ * any humanizer model. We strip it from the output if any survives.
+ */
+const PARAGRAPH_SENTINEL = '\n¶¶¶\n';
+
+/**
+ * Per-section retry policy. Big documents experience occasional 429/5xx and
+ * network timeouts. We retry each failing section up to MAX_SECTION_RETRIES
+ * times with exponential backoff. After that, the section is left as the
+ * ORIGINAL text (formatting + words) and the run continues so the user still
+ * gets a complete document for the rest of the doc.
+ */
+const MAX_SECTION_RETRIES = 4;
+const RETRY_BASE_DELAY_MS = 2500;
+
 export interface HumanizeOptions {
   readability: string;
   purpose: string;
@@ -21,6 +41,10 @@ export interface ProgressUpdate {
   preview?: { original: string; humanized: string };
   /** Optional sub-progress 0-1 for indeterminate-feeling phases (e.g. zip rebuild). */
   subProgress?: number;
+  /** True if this update represents a soft warning (e.g. retrying / skipped) rather than progress. */
+  warning?: boolean;
+  /** How many sections were skipped after exhausting retries. */
+  skippedSections?: number;
 }
 
 /**
@@ -100,17 +124,21 @@ function extractParagraphs(doc: Document): ParagraphChunk[] {
   return paragraphs;
 }
 
-/** Group consecutive paragraphs until reaching ~targetWords words per section. */
+/** Group consecutive paragraphs until reaching ~targetWords words per section.
+ *
+ * Paragraphs within a section are joined with `PARAGRAPH_SENTINEL` so the
+ * humanized output can be re-split back to the original paragraph structure
+ * (preserving headings, alignment, indentation, line spacing, etc.).
+ */
 function buildSections(paragraphs: ParagraphChunk[], targetWords: number): SectionChunk[] {
   const sections: SectionChunk[] = [];
   let current: ParagraphChunk[] = [];
   let currentWords = 0;
   for (const p of paragraphs) {
     const w = countWords(p.text);
-    // skip empty paragraphs but keep them in their own micro-section so they aren't sent to API
     if (w === 0) {
       if (current.length > 0) {
-        const text = current.map((c) => c.text).join('\n');
+        const text = current.map((c) => c.text).join(PARAGRAPH_SENTINEL);
         sections.push({ paragraphs: current, text, wordCount: currentWords });
         current = [];
         currentWords = 0;
@@ -121,14 +149,14 @@ function buildSections(paragraphs: ParagraphChunk[], targetWords: number): Secti
     current.push(p);
     currentWords += w;
     if (currentWords >= targetWords) {
-      const text = current.map((c) => c.text).join('\n');
+      const text = current.map((c) => c.text).join(PARAGRAPH_SENTINEL);
       sections.push({ paragraphs: current, text, wordCount: currentWords });
       current = [];
       currentWords = 0;
     }
   }
   if (current.length > 0) {
-    const text = current.map((c) => c.text).join('\n');
+    const text = current.map((c) => c.text).join(PARAGRAPH_SENTINEL);
     sections.push({ paragraphs: current, text, wordCount: currentWords });
   }
   return sections;
@@ -139,14 +167,34 @@ function distributeAcrossParagraphs(
   paragraphs: ParagraphChunk[],
   humanized: string
 ): string[] {
-  // Prefer paragraph splits in the humanized text if they exist.
+  // 1) Sentinel-based split (most reliable). We injected `\n¶¶¶\n` between
+  //    paragraphs in the prompt; if the humanizer kept it, alignment is exact.
+  if (humanized.includes(PARAGRAPH_SENTINEL)) {
+    const parts = humanized
+      .split(PARAGRAPH_SENTINEL)
+      .map((s) => s.trim());
+    if (parts.length === paragraphs.length) {
+      return parts;
+    }
+    // If the model accidentally dropped/added one, pad/truncate so we don't
+    // shift content between unrelated paragraphs.
+    if (parts.length > paragraphs.length) {
+      const merged = parts.slice(0, paragraphs.length - 1);
+      merged.push(parts.slice(paragraphs.length - 1).join(' '));
+      return merged;
+    }
+    while (parts.length < paragraphs.length) parts.push('');
+    return parts;
+  }
+
+  // 2) Plain blank-line split.
   const splitByNewline = humanized.split(/\n+/).map((s) => s.trim()).filter(Boolean);
   if (splitByNewline.length === paragraphs.length) {
     return splitByNewline;
   }
-  // Otherwise split by sentence proportion.
+
+  // 3) Fall back to sentence-proportion split.
   const totalChars = paragraphs.reduce((s, p) => s + Math.max(1, p.text.length), 0);
-  // Split humanized into sentences.
   const sentences = humanized.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [humanized];
   const out: string[] = [];
   let cursor = 0;
@@ -163,7 +211,13 @@ function distributeAcrossParagraphs(
   return out;
 }
 
-/** Distribute paragraph text across its runs proportionally to original lengths. */
+/** Distribute paragraph text across its runs proportionally to original lengths.
+ *
+ * Each run carries its own `<w:rPr>` (font, size, bold, italic, color, etc.).
+ * Runs are visited in order; we always cut on a whitespace boundary so the
+ * formatting boundary lands between words instead of inside one. This is
+ * critical for preserving the look of headings, emphasized phrases, etc.
+ */
 function distributeAcrossRuns(runs: RunRef[], paragraphText: string) {
   if (runs.length === 0) return;
   if (runs.length === 1) {
@@ -172,35 +226,44 @@ function distributeAcrossRuns(runs: RunRef[], paragraphText: string) {
   }
   const totalOrig = runs.reduce((s, r) => s + r.text.length, 0);
   if (totalOrig === 0) {
-    // nothing to anchor — put it all in first run
     setRunText(runs[0].tNode, paragraphText);
     for (let i = 1; i < runs.length; i++) setRunText(runs[i].tNode, '');
     return;
   }
+
   const total = paragraphText.length;
   let consumed = 0;
   for (let i = 0; i < runs.length; i++) {
-    const ratio = runs[i].text.length / totalOrig;
+    const isLast = i === runs.length - 1;
     let take: number;
-    if (i === runs.length - 1) {
+    if (isLast) {
       take = total - consumed;
     } else {
+      const ratio = runs[i].text.length / totalOrig;
       take = Math.round(total * ratio);
     }
-    let slice = paragraphText.substr(consumed, take);
-    // try to break on a space boundary unless last run
-    if (i < runs.length - 1 && slice.length > 0 && consumed + take < total) {
-      const nextChar = paragraphText.charAt(consumed + take);
-      if (nextChar && !/\s/.test(nextChar) && !/\s$/.test(slice)) {
-        const lastSpace = slice.lastIndexOf(' ');
-        if (lastSpace > Math.floor(slice.length * 0.5)) {
-          slice = slice.substring(0, lastSpace + 1);
-          take = slice.length;
-        }
+
+    let end = consumed + take;
+    if (!isLast && end < total) {
+      // Snap forward or backward to the nearest whitespace boundary so the
+      // formatting cut never falls inside a word. Prefer the nearest space.
+      const window = Math.max(8, Math.floor(take * 0.25));
+      const fwd = paragraphText.indexOf(' ', end);
+      const bwd = paragraphText.lastIndexOf(' ', end);
+      const fwdDist = fwd === -1 ? Infinity : fwd - end;
+      const bwdDist = bwd === -1 || bwd <= consumed ? Infinity : end - bwd;
+      if (fwdDist <= bwdDist && fwdDist <= window) {
+        end = fwd + 1; // include the space with the current run
+      } else if (bwdDist < Infinity && bwdDist <= window) {
+        end = bwd + 1;
       }
+      // If neither boundary is within the window, fall back to the original
+      // proportional cut (better than searching the whole string).
     }
+
+    const slice = paragraphText.substring(consumed, end);
     setRunText(runs[i].tNode, slice);
-    consumed += take;
+    consumed = end;
   }
 }
 
@@ -250,22 +313,49 @@ async function humanizeText(
   // poll
   const start = Date.now();
   const TIMEOUT_MS = 5 * 60 * 1000;
+  let consecutivePollErrors = 0;
   while (Date.now() - start < TIMEOUT_MS) {
     if (signal?.aborted) throw new Error('Aborted');
     await new Promise((r) => setTimeout(r, 5000));
-    const docRes = await fetch('/api/humanizer/document', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-      body: JSON.stringify({ id }),
-    });
+    let docRes: Response;
+    try {
+      docRes = await fetch('/api/humanizer/document', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal,
+        body: JSON.stringify({ id }),
+      });
+    } catch (err) {
+      // Network blip — try again rather than killing the whole document.
+      consecutivePollErrors += 1;
+      if (consecutivePollErrors >= 6) {
+        throw new Error(
+          `Network error while polling humanizer: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      continue;
+    }
     const docData = await docRes.json().catch(() => ({}));
     if (!docRes.ok) {
+      // Treat 502/503/504 as transient.
+      if ([502, 503, 504].includes(docRes.status)) {
+        consecutivePollErrors += 1;
+        if (consecutivePollErrors >= 6) {
+          throw friendlyError(
+            docRes.status,
+            docData?.error || `Document fetch failed (${docRes.status})`
+          );
+        }
+        continue;
+      }
       throw friendlyError(
         docRes.status,
         docData?.error || `Document fetch failed (${docRes.status})`
       );
     }
+    consecutivePollErrors = 0;
     if (docData?.output && typeof docData.output === 'string' && docData.output.length > 0) {
       return docData.output as string;
     }
@@ -319,6 +409,7 @@ export async function humanizeDocxFile(
 
   let processed = 0;
   let consumedEstimate = 0;
+  let skippedSections = 0;
   for (const section of sections) {
     if (signal?.aborted) throw new Error('Aborted');
     if (section.wordCount === 0 || section.text.trim().length < 50) {
@@ -346,15 +437,73 @@ export async function humanizeDocxFile(
       current: processed,
       total: meaningful.length,
     });
-    let humanized: string;
-    try {
-      humanized = await humanizeText(section.text, options, signal);
-    } catch (err) {
-      throw err instanceof Error
-        ? err
-        : new Error(`Section ${processed} failed: ${String(err)}`);
+
+    // Retry loop: transient 429 / 5xx / network failures should not abort
+    // a 200-section document. After MAX_SECTION_RETRIES we leave the
+    // section untouched and continue so the rest of the doc still gets
+    // humanized + the user keeps their formatting/structure.
+    let humanized: string | null = null;
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= MAX_SECTION_RETRIES; attempt += 1) {
+      if (signal?.aborted) throw new Error('Aborted');
+      try {
+        humanized = await humanizeText(section.text, options, signal);
+        break;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (lastError.message === 'Aborted') throw lastError;
+        if (attempt === MAX_SECTION_RETRIES) break;
+        // Hard-fail on credit / auth issues — no amount of retrying fixes them.
+        const cause = (lastError as Error & { cause?: string }).cause || '';
+        const fatal =
+          /insufficient|not allowed|api key|forbidden|401|403|402/i.test(
+            (lastError.message || '') + ' ' + cause
+          );
+        if (fatal) break;
+        const backoff = RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+        onProgress({
+          phase: 'humanizing',
+          message: `Section ${processed} failed (${lastError.message}). Retrying in ${Math.round(
+            backoff / 1000
+          )}s… (attempt ${attempt + 2}/${MAX_SECTION_RETRIES + 1})`,
+          current: processed,
+          total: meaningful.length,
+          warning: true,
+        });
+        await new Promise((r) => setTimeout(r, backoff));
+      }
     }
+
+    if (humanized === null) {
+      // Exhausted retries — surface a warning and skip this section so the
+      // rest of the document still completes. Original text stays in place.
+      skippedSections += 1;
+      const cause = lastError && (lastError as Error & { cause?: string }).cause;
+      const fatal =
+        cause &&
+        /insufficient|not allowed|api key|forbidden|401|403|402/i.test(
+          (lastError?.message || '') + ' ' + cause
+        );
+      if (fatal && lastError) {
+        // No point continuing if we'll just re-fail every remaining section.
+        throw lastError;
+      }
+      onProgress({
+        phase: 'humanizing',
+        message: `Section ${processed} skipped after ${MAX_SECTION_RETRIES + 1} attempts: ${
+          lastError?.message || 'unknown error'
+        }. Continuing with the rest of the document.`,
+        current: processed,
+        total: meaningful.length,
+        warning: true,
+        skippedSections,
+      });
+      continue;
+    }
+
     consumedEstimate += nextEstimate;
+    // Strip any straggler sentinels from the model output before distributing.
+    const cleaned = humanized.replace(/¶¶¶/g, '').replace(/\n{3,}/g, '\n\n');
     const perParagraph = distributeAcrossParagraphs(section.paragraphs, humanized);
     section.paragraphs.forEach((p, i) => {
       const txt = perParagraph[i] ?? '';
@@ -365,9 +514,10 @@ export async function humanizeDocxFile(
       message: `Section ${processed}/${meaningful.length} done.`,
       current: processed,
       total: meaningful.length,
+      skippedSections,
       preview: {
-        original: section.text.slice(0, 240),
-        humanized: humanized.slice(0, 240),
+        original: section.text.replace(/¶¶¶/g, '').slice(0, 240),
+        humanized: cleaned.slice(0, 240),
       },
     });
   }
@@ -393,7 +543,13 @@ export async function humanizeDocxFile(
 
   const baseName = file.name.replace(/\.docx$/i, '');
   const outName = `${baseName}-humanized.docx`;
-  onProgress({ phase: 'done', message: 'Ready to download.' });
+  onProgress({
+    phase: 'done',
+    message: skippedSections
+      ? `Ready to download. ${skippedSections} section(s) couldn't be humanized after retries and were left as the original text.`
+      : 'Ready to download.',
+    skippedSections,
+  });
   return { blob: outBlob, filename: outName };
 }
 
