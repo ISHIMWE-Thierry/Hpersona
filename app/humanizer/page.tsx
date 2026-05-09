@@ -446,6 +446,11 @@ export default function HumanizerPage() {
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-8 space-y-8">
+        {/* Steps 1 & 2 are hidden while a job is running or after it completes,
+            so the live progress can take over the screen. They reappear after
+            Reset or once the user picks a new file. */}
+        {!isBusy && phase !== 'done' && (
+        <>
         {/* Step 1: Upload */}
         <section className="space-y-3">
           <h2 className="text-sm font-semibold text-slate-950">
@@ -685,6 +690,8 @@ export default function HumanizerPage() {
              </div>
            )}
          </section>
+        </>
+        )}
 
         {/* Step 3: Run */}
         <section className="space-y-3">
