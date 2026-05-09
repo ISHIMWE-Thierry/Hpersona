@@ -1,8 +1,27 @@
 // Client-side DOCX humanizer. Preserves runs (and therefore fonts/sizes/styles)
 // by replacing only the text nodes within paragraphs.
+//
+// Pipeline overview:
+//   1. Parse word/document.xml.
+//   2. Classify every paragraph as humanizable or pass-through. The following
+//      are NEVER touched:
+//        • paragraphs inside tables (<w:tbl>)
+//        • paragraphs containing pictures / drawings (<w:drawing>)
+//        • paragraphs containing math / equations (m:oMath, m:oMathPara)
+//        • paragraphs with hyperlinks (TOC links, external links)
+//        • paragraphs with field codes (<w:fldSimple>, <w:instrText> — TOC,
+//          page refs, etc.)
+//        • headings / titles / TOC entries (pStyle starts with "Heading",
+//          "Title", "Subtitle", "TOC", "Caption", "Bibliography")
+//   3. If the document language is not English, translate humanizable text
+//      to English first via OpenRouter, run the humanizer, then translate
+//      the humanized result back to the original language.
+//   4. Distribute the humanized text back across the same <w:t> runs so
+//      fonts, sizes, bold/italic, color, etc. are preserved exactly.
 import JSZip from 'jszip';
 
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const M_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
 
 /**
  * Sentinel inserted between paragraphs when sending a section to the humanizer
@@ -34,7 +53,15 @@ export interface HumanizeOptions {
 }
 
 export interface ProgressUpdate {
-  phase: 'parsing' | 'chunking' | 'humanizing' | 'rebuilding' | 'done' | 'error';
+  phase:
+    | 'parsing'
+    | 'chunking'
+    | 'detecting-language'
+    | 'translating'
+    | 'humanizing'
+    | 'rebuilding'
+    | 'done'
+    | 'error';
   message: string;
   current?: number;
   total?: number;
@@ -45,6 +72,8 @@ export interface ProgressUpdate {
   warning?: boolean;
   /** How many sections were skipped after exhausting retries. */
   skippedSections?: number;
+  /** Detected source language (ISO 639-1). */
+  language?: string;
 }
 
 /**
@@ -97,6 +126,10 @@ interface ParagraphChunk {
   paragraphIndex: number;
   runs: RunRef[];
   text: string; // joined text
+  /** False = pass through untouched (table cell, heading, TOC, math, drawing, …). */
+  humanizable: boolean;
+  /** Human-readable reason — surfaced in the live log. */
+  skipReason?: string;
 }
 
 interface SectionChunk {
@@ -111,15 +144,103 @@ function countWords(s: string): number {
   return t.split(/\s+/).length;
 }
 
+const SKIP_STYLE_PREFIXES = [
+  'heading',
+  'title',
+  'subtitle',
+  'toc',
+  'caption',
+  'bibliography',
+  'tableof',
+];
+
+/** Walk up the ancestor chain looking for a `<w:tbl>` element. */
+function isInsideTable(p: Element): boolean {
+  let n: Node | null = p.parentNode;
+  while (n && n.nodeType === 1) {
+    const el = n as Element;
+    if (el.namespaceURI === W_NS && el.localName === 'tbl') return true;
+    n = el.parentNode;
+  }
+  return false;
+}
+
+/** Read the paragraph style id from <w:pPr><w:pStyle w:val="…"/>. */
+function paragraphStyleId(p: Element): string {
+  const pPr = p.getElementsByTagNameNS(W_NS, 'pPr')[0];
+  if (!pPr) return '';
+  const pStyle = pPr.getElementsByTagNameNS(W_NS, 'pStyle')[0];
+  if (!pStyle) return '';
+  return (pStyle.getAttributeNS(W_NS, 'val') || pStyle.getAttribute('w:val') || '')
+    .toString()
+    .toLowerCase();
+}
+
+function classifyParagraph(p: Element): { humanizable: boolean; reason?: string } {
+  if (isInsideTable(p)) return { humanizable: false, reason: 'table' };
+
+  // Drawings / pictures / shapes
+  if (p.getElementsByTagNameNS(W_NS, 'drawing').length > 0) {
+    return { humanizable: false, reason: 'image/drawing' };
+  }
+  if (p.getElementsByTagNameNS(W_NS, 'pict').length > 0) {
+    return { humanizable: false, reason: 'image/picture' };
+  }
+  if (p.getElementsByTagNameNS(W_NS, 'object').length > 0) {
+    return { humanizable: false, reason: 'embedded-object' };
+  }
+
+  // Math / equations (OMML)
+  if (
+    p.getElementsByTagNameNS(M_NS, 'oMath').length > 0 ||
+    p.getElementsByTagNameNS(M_NS, 'oMathPara').length > 0
+  ) {
+    return { humanizable: false, reason: 'formula/equation' };
+  }
+
+  // Hyperlinks (TOC links, external links, footnote refs)
+  if (p.getElementsByTagNameNS(W_NS, 'hyperlink').length > 0) {
+    return { humanizable: false, reason: 'hyperlink' };
+  }
+
+  // Field codes (TOC field, PAGE/REF, etc.)
+  if (
+    p.getElementsByTagNameNS(W_NS, 'fldSimple').length > 0 ||
+    p.getElementsByTagNameNS(W_NS, 'instrText').length > 0
+  ) {
+    return { humanizable: false, reason: 'field/TOC' };
+  }
+
+  // Style-based skips: headings, titles, TOC entries, captions, bibliography
+  const styleId = paragraphStyleId(p);
+  if (styleId) {
+    if (SKIP_STYLE_PREFIXES.some((pref) => styleId.startsWith(pref))) {
+      return { humanizable: false, reason: `style:${styleId}` };
+    }
+  }
+
+  return { humanizable: true };
+}
+
 /** Extract paragraphs and their runs from document.xml */
 function extractParagraphs(doc: Document): ParagraphChunk[] {
   const paragraphs: ParagraphChunk[] = [];
   const pNodes = Array.from(doc.getElementsByTagNameNS(W_NS, 'p'));
   pNodes.forEach((p, idx) => {
+    // Only collect <w:t> elements that are direct text of this paragraph
+    // (not inside a hyperlink/field — those paragraphs are skipped wholesale
+    // anyway, so this just makes the run list stable).
     const tNodes = Array.from(p.getElementsByTagNameNS(W_NS, 't'));
     const runs: RunRef[] = tNodes.map((t) => ({ tNode: t, text: t.textContent || '' }));
     const text = runs.map((r) => r.text).join('');
-    paragraphs.push({ paragraphIndex: idx, runs, text });
+    const { humanizable, reason } = classifyParagraph(p);
+    paragraphs.push({
+      paragraphIndex: idx,
+      runs,
+      text,
+      humanizable,
+      skipReason: reason,
+    });
   });
   return paragraphs;
 }
@@ -134,31 +255,31 @@ function buildSections(paragraphs: ParagraphChunk[], targetWords: number): Secti
   const sections: SectionChunk[] = [];
   let current: ParagraphChunk[] = [];
   let currentWords = 0;
+  const flush = () => {
+    if (current.length > 0) {
+      const text = current.map((c) => c.text).join(PARAGRAPH_SENTINEL);
+      sections.push({ paragraphs: current, text, wordCount: currentWords });
+      current = [];
+      currentWords = 0;
+    }
+  };
   for (const p of paragraphs) {
     const w = countWords(p.text);
-    if (w === 0) {
-      if (current.length > 0) {
-        const text = current.map((c) => c.text).join(PARAGRAPH_SENTINEL);
-        sections.push({ paragraphs: current, text, wordCount: currentWords });
-        current = [];
-        currentWords = 0;
-      }
+    // Non-humanizable paragraphs (tables, headings, TOC, math, drawings,
+    // hyperlinks, field codes…) get their own pass-through section so they
+    // are skipped by the humanize loop while their words remain in the doc.
+    if (!p.humanizable || w === 0) {
+      flush();
       sections.push({ paragraphs: [p], text: p.text, wordCount: 0 });
       continue;
     }
     current.push(p);
     currentWords += w;
     if (currentWords >= targetWords) {
-      const text = current.map((c) => c.text).join(PARAGRAPH_SENTINEL);
-      sections.push({ paragraphs: current, text, wordCount: currentWords });
-      current = [];
-      currentWords = 0;
+      flush();
     }
   }
-  if (current.length > 0) {
-    const text = current.map((c) => c.text).join(PARAGRAPH_SENTINEL);
-    sections.push({ paragraphs: current, text, wordCount: currentWords });
-  }
+  flush();
   return sections;
 }
 
@@ -275,12 +396,98 @@ function setRunText(tNode: Element, value: string) {
   tNode.textContent = value;
 }
 
+// ── Translation (OpenRouter) ──────────────────────────────────────────────────
+//
+// We round-trip non-English documents through English so the humanizer model
+// can do its best work, then translate the humanized result back. The literal
+// "¶¶¶" sentinel survives both translations because the API prompt instructs
+// the model to keep it intact.
+
+async function detectLanguage(sample: string, signal?: AbortSignal): Promise<string> {
+  try {
+    const res = await fetch('/api/humanizer/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      body: JSON.stringify({ mode: 'detect', text: sample.slice(0, 1500) }),
+    });
+    if (!res.ok) return 'en';
+    const data = (await res.json().catch(() => ({}))) as { language?: string };
+    return (data?.language || 'en').toLowerCase().slice(0, 2);
+  } catch {
+    return 'en';
+  }
+}
+
+async function translateText(
+  text: string,
+  from: string,
+  to: string,
+  signal?: AbortSignal
+): Promise<string> {
+  if (from === to) return text;
+  // OpenRouter has a per-call context limit. Translate up to ~25k chars; if
+  // the section is bigger (very rare with 300-word chunks), split on the
+  // sentinel and translate each piece individually so nothing gets dropped.
+  const HARD_LIMIT = 25_000;
+  if (text.length <= HARD_LIMIT) {
+    return translateOnce(text, from, to, signal);
+  }
+  const parts = text.split(PARAGRAPH_SENTINEL);
+  const out: string[] = [];
+  for (const part of parts) {
+    out.push(await translateOnce(part, from, to, signal));
+  }
+  return out.join(PARAGRAPH_SENTINEL);
+}
+
+async function translateOnce(
+  text: string,
+  from: string,
+  to: string,
+  signal?: AbortSignal
+): Promise<string> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (signal?.aborted) throw new Error('Aborted');
+    try {
+      const res = await fetch('/api/humanizer/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal,
+        body: JSON.stringify({ mode: 'translate', text, from, to }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        text?: string;
+        error?: string;
+      };
+      if (!res.ok) {
+        // Fatal vs transient
+        if ([429, 500, 502, 503, 504].includes(res.status)) {
+          lastError = new Error(data?.error || `Translate failed (${res.status})`);
+          await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt)));
+          continue;
+        }
+        throw new Error(data?.error || `Translate failed (${res.status})`);
+      }
+      const out = (data?.text || '').toString();
+      if (!out.trim()) throw new Error('Translator returned empty text.');
+      return out;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (lastError.message === 'Aborted') throw lastError;
+      if (attempt === 3) break;
+      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt)));
+    }
+  }
+  throw lastError || new Error('Translation failed.');
+}
+
 async function humanizeText(
   text: string,
   options: HumanizeOptions,
   signal?: AbortSignal
 ): Promise<string> {
-  // submit, with one retry on 429.
   let submitRes: Response | null = null;
   let submitData: { id?: string; error?: string } = {};
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -407,6 +614,31 @@ export async function humanizeDocxFile(
     current: 0,
   });
 
+  // ── Detect document language ─────────────────────────────────────────────
+  // The humanizer model is tuned for English. For non-English documents we
+  // round-trip: translate section → English → humanize → translate back.
+  // Headings, tables, math, hyperlinks and other "delicate" paragraphs are
+  // already flagged as non-humanizable above, so they are passed through
+  // untouched (no translation either) and keep their original wording.
+  let docLang = 'en';
+  if (meaningful.length > 0) {
+    onProgress({ phase: 'detecting-language', message: 'Detecting document language…' });
+    const sample = meaningful
+      .slice(0, 3)
+      .map((s) => s.text.replace(/¶¶¶/g, ' '))
+      .join(' ')
+      .slice(0, 1500);
+    docLang = await detectLanguage(sample, signal);
+    onProgress({
+      phase: 'detecting-language',
+      message:
+        docLang === 'en'
+          ? 'Document is in English — humanizing directly.'
+          : `Document language: ${docLang.toUpperCase()} — will translate ↔ English around humanization.`,
+      language: docLang,
+    });
+  }
+
   let processed = 0;
   let consumedEstimate = 0;
   let skippedSections = 0;
@@ -447,7 +679,30 @@ export async function humanizeDocxFile(
     for (let attempt = 0; attempt <= MAX_SECTION_RETRIES; attempt += 1) {
       if (signal?.aborted) throw new Error('Aborted');
       try {
-        humanized = await humanizeText(section.text, options, signal);
+        let toHumanize = section.text;
+        if (docLang !== 'en') {
+          onProgress({
+            phase: 'translating',
+            message: `Translating section ${processed}/${meaningful.length} to English…`,
+            current: processed,
+            total: meaningful.length,
+            language: docLang,
+          });
+          toHumanize = await translateText(section.text, docLang, 'en', signal);
+        }
+        const humanizedEn = await humanizeText(toHumanize, options, signal);
+        if (docLang !== 'en') {
+          onProgress({
+            phase: 'translating',
+            message: `Translating humanized section ${processed}/${meaningful.length} back to ${docLang.toUpperCase()}…`,
+            current: processed,
+            total: meaningful.length,
+            language: docLang,
+          });
+          humanized = await translateText(humanizedEn, 'en', docLang, signal);
+        } else {
+          humanized = humanizedEn;
+        }
         break;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));

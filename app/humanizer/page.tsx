@@ -888,6 +888,8 @@ export default function HumanizerPage() {
                   <span>
                     {phase === 'parsing' && 'Reading document…'}
                     {phase === 'chunking' && 'Splitting into sections…'}
+                    {phase === 'detecting-language' && 'Detecting language…'}
+                    {phase === 'translating' && `Translating ${current}/${total}`}
                     {phase === 'humanizing' && `Humanizing ${current}/${total}`}
                     {phase === 'rebuilding' && `Rebuilding .docx… ${rebuildPct}%`}
                     {phase === 'done' && 'Completed'}
