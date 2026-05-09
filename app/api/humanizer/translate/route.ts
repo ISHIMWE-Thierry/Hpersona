@@ -35,10 +35,11 @@ const openai = new OpenAI({
   },
 });
 
-// Gemini 2.5 Flash is fast, cheap and excellent at literal translation while
-// preserving sentinel tokens. Override via env if needed.
+// Claude Sonnet 4.5 gives the highest-quality literal translation across
+// Russian / European languages and reliably preserves the "¶¶¶" sentinel,
+// numbers, formulas, and citations. Override via env if needed.
 const TRANSLATION_MODEL =
-  process.env.HPERSONA_TRANSLATION_MODEL || 'google/gemini-2.5-flash';
+  process.env.HPERSONA_TRANSLATION_MODEL || 'anthropic/claude-sonnet-4.5';
 
 interface Body {
   mode?: 'detect' | 'translate';
@@ -134,14 +135,18 @@ export async function POST(req: NextRequest) {
     const toLabel = languageName(to);
 
     const system = [
-      `You are a professional document translator from ${fromLabel} to ${toLabel}.`,
-      'Translate the user text faithfully and literally. Do NOT summarize, paraphrase, edit, omit or add anything.',
-      'CRITICAL FORMATTING RULES:',
-      '• Preserve the literal token "¶¶¶" exactly where it appears (it marks paragraph boundaries).',
-      '• Preserve all numbers, dates, percentages, units, citations, URLs, and proper nouns verbatim.',
-      '• Preserve LaTeX / math expressions, code, and formulas verbatim.',
-      '• Keep paragraph order, list items, and inline punctuation 1:1.',
-      '• Output ONLY the translation. No quotes, no labels, no commentary.',
+      `You are a professional academic / technical document translator from ${fromLabel} to ${toLabel}.`,
+      'Translate the user text faithfully, literally and in fluent, grammatically correct prose.',
+      'Match the register of the source (academic, legal, technical, casual) exactly.',
+      'Do NOT summarize, paraphrase, edit, omit, reorder, merge, split, or add anything.',
+      'CRITICAL FORMATTING RULES — these are mandatory and non-negotiable:',
+      '• Preserve the literal token "¶¶¶" EXACTLY where it appears (paragraph boundary marker). Same count, same positions. Never delete, move, or merge "¶¶¶".',
+      '• Preserve all numbers, dates, percentages, units, equations, variables, citations, references, URLs, file paths, and proper nouns verbatim — character for character.',
+      '• Preserve LaTeX / math expressions ($...$, \\(...\\), \\[...\\]), code, formulas, chemical formulas, and physics notation verbatim.',
+      '• Preserve list markers, bullet points, numbering schemes (1., 1.1, a), i.), section numbers, and inline punctuation 1:1.',
+      '• Preserve sentence count and paragraph order 1:1. One source sentence → one target sentence.',
+      '• Use natural, idiomatic target-language grammar. No machine-translation artefacts. No awkward word order.',
+      '• Output ONLY the translation. No quotes, no labels, no preface, no commentary, no notes, no explanations.',
     ].join('\n');
 
     const resp = await openai.chat.completions.create({

@@ -690,6 +690,20 @@ export async function humanizeDocxFile(
           });
           toHumanize = await translateText(section.text, docLang, 'en', signal);
         }
+        // The humanizer service rejects content shorter than 50 chars. After
+        // translation a short Russian/etc. section may collapse below that
+        // threshold — in that case skip humanizing and keep the original
+        // text untouched (no point in retrying or losing the section).
+        if (toHumanize.trim().length < 50) {
+          humanized = section.text;
+          onProgress({
+            phase: 'humanizing',
+            message: `Section ${processed}/${meaningful.length} too short to humanize — kept as original.`,
+            current: processed,
+            total: meaningful.length,
+          });
+          break;
+        }
         const humanizedEn = await humanizeText(toHumanize, options, signal);
         if (docLang !== 'en') {
           onProgress({
@@ -707,6 +721,17 @@ export async function humanizeDocxFile(
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         if (lastError.message === 'Aborted') throw lastError;
+        // Content-too-short is not retryable — keep original and move on.
+        if (/at least 50 characters|content must be at least/i.test(lastError.message)) {
+          humanized = section.text;
+          onProgress({
+            phase: 'humanizing',
+            message: `Section ${processed}/${meaningful.length} too short to humanize — kept as original.`,
+            current: processed,
+            total: meaningful.length,
+          });
+          break;
+        }
         if (attempt === MAX_SECTION_RETRIES) break;
         // Hard-fail on credit / auth issues — no amount of retrying fixes them.
         const cause = (lastError as Error & { cause?: string }).cause || '';
