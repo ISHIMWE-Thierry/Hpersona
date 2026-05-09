@@ -11,6 +11,7 @@ import {
   signInWithPopup
 } from 'firebase/auth';
 import { auth, isFirebaseConfigured } from '@/lib/firebase';
+import { ensureUserProfile } from '@/lib/admin';
 
 interface AuthContextType {
   user: User | null;
@@ -36,6 +37,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        ensureUserProfile(user).catch((error) => {
+          console.error('Unable to ensure user profile:', error);
+        });
+      }
       setUser(user);
       setLoading(false);
     });

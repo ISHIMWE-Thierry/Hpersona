@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { MessageSquare, Plus, Trash2, LogOut, Menu, X, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
@@ -6,6 +6,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Conversation } from '@/types/chat';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
+import { isAdminEmail, isAdminUser } from '@/lib/admin';
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -26,11 +27,30 @@ export function Sidebar({
 }: SidebarProps) {
   const { user, signOut } = useAuth();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const handleMobileOpenChange = (open: boolean) => {
     setIsMobileOpen(open);
     onMobileOpenChange?.(open);
   };
+
+  useEffect(() => {
+    if (!user) {
+      setIsAdmin(false);
+      return;
+    }
+    let cancelled = false;
+    if (isAdminEmail(user)) {
+      setIsAdmin(true);
+      return;
+    }
+    isAdminUser(user).then((value) => {
+      if (!cancelled) setIsAdmin(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   const sidebarContent = (
     <div className="flex h-full flex-col">
@@ -67,6 +87,15 @@ export function Sidebar({
           <span className="flex-1">Humanize Document</span>
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">New</span>
         </Link>
+        {isAdmin && (
+          <Link
+            href="/admin"
+            onClick={() => handleMobileOpenChange(false)}
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-all hover:bg-sidebar-accent border border-transparent hover:border-border"
+          >
+            <span className="flex-1">Admin dashboard</span>
+          </Link>
+        )}
       </div>
 
       {/* Conversations List - Scrollable */}

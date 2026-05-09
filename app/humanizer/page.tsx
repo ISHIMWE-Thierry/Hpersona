@@ -2,18 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import {
-  ArrowLeft,
-  Upload,
-  FileText,
-  Wand2,
-  Download,
-  Loader2,
-  CheckCircle2,
-  AlertCircle,
-  XCircle,
-  StopCircle,
-} from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import {
   humanizeDocxFile,
   analyzeDocxFile,
@@ -22,6 +11,14 @@ import {
   type HumanizeOptions,
   type DocxAnalysis,
 } from '@/lib/docx-humanizer';
+import { useAuth } from '@/contexts/AuthContext';
+import {
+  createCreditRequest,
+  consumeUsage,
+  DEFAULT_USAGE_LIMIT,
+  getUsage,
+  type UsageDoc,
+} from '@/lib/humanizer-usage';
 
 type Phase = ProgressUpdate['phase'] | 'idle';
 
@@ -63,6 +60,8 @@ export default function HumanizerPage() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadName, setDownloadName] = useState<string>('humanized.docx');
   const [credits, setCredits] = useState<number | null>(null);
+  const [usage, setUsage] = useState<UsageDoc | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<DocxAnalysis | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -72,9 +71,24 @@ export default function HumanizerPage() {
   const [model, setModel] = useState('v11');
   const [chunkWords, setChunkWords] = useState(300);
 
+  const { user } = useAuth();
+
+  const [requestModalOpen, setRequestModalOpen] = useState(false);
+  const [requestMessage, setRequestMessage] = useState('');
+  const [requestLimit, setRequestLimit] = useState(DEFAULT_USAGE_LIMIT);
+  const [requestUnlimited, setRequestUnlimited] = useState(false);
+  const [requestBusy, setRequestBusy] = useState(false);
+  const [requestSuccess, setRequestSuccess] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+
+  const remainingWords = usage?.unlimited ? Infinity : Math.max(0, (usage?.limit ?? DEFAULT_USAGE_LIMIT) - (usage?.used ?? 0));
+  const insufficientLocalUsage = !!analysis && !!usage && !usage.unlimited && analysis.billableWords > remainingWords;
   const insufficientCredits =
     !!analysis && typeof credits === 'number' && analysis.billableWords > credits;
   const isBusy = phase !== 'idle' && phase !== 'done' && phase !== 'error';
+
+  const missingUsage = !!user && usage === null;
+  const startDisabled = !file || isBusy || insufficientCredits || insufficientLocalUsage || !user || missingUsage;
 
   const checkCredits = useCallback(async (): Promise<number | null> => {
     try {
@@ -88,6 +102,22 @@ export default function HumanizerPage() {
       return null;
     }
   }, []);
+
+  const refreshUsage = useCallback(async () => {
+    if (!user) {
+      setUsage(null);
+      return;
+    }
+    try {
+      const doc = await getUsage(user.uid);
+      setUsage(doc);
+      setUsageError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to load usage.';
+      setUsageError(message);
+      setUsage(null);
+    }
+  }, [user]);
 
   const onSelectFile = useCallback((f: File | null) => {
     if (!f) return;
@@ -138,10 +168,28 @@ export default function HumanizerPage() {
 
   // Auto-refresh credits when analysis arrives so the banner is never stale.
   useEffect(() => {
-    if (analysis) checkCredits();
-  }, [analysis, checkCredits]);
+    if (analysis) {
+      checkCredits();
+      refreshUsage();
+    }
+  }, [analysis, checkCredits, refreshUsage]);
+
+  useEffect(() => {
+    if (user) {
+      checkCredits();
+    }
+  }, [checkCredits, user]);
+
+  useEffect(() => {
+    refreshUsage();
+  }, [refreshUsage]);
 
   const start = async () => {
+    if (!user) {
+      setError('Please sign in to use the humanizer and track your word budget.');
+      setPhase('error');
+      return;
+    }
     if (!file) return;
     setError(null);
     setDownloadUrl(null);
@@ -174,9 +222,23 @@ export default function HumanizerPage() {
         return;
       }
 
+      if (!usage) {
+        setError('Unable to read your usage. Please reload and try again.');
+        setPhase('error');
+        return;
+      }
+
       if (report.billableWords > availableCredits) {
         setError(
           `Insufficient credits. Estimated usage ≈ ${report.billableWords.toLocaleString()} (input ${report.estimatedInputWords.toLocaleString()} × ${CREDIT_SAFETY_MULTIPLIER}); available ${availableCredits.toLocaleString()}.`
+        );
+        setPhase('error');
+        return;
+      }
+
+      if (!usage.unlimited && report.billableWords > remainingWords) {
+        setError(
+          `This job needs ${report.billableWords.toLocaleString()} words but you only have ${remainingWords.toLocaleString()} words available.`
         );
         setPhase('error');
         return;
@@ -228,7 +290,13 @@ export default function HumanizerPage() {
       setDownloadUrl(url);
       setDownloadName(filename);
       setPhase('done');
+      if (user && report.billableWords > 0) {
+        consumeUsage(user.uid, report.billableWords).catch((err) => {
+          console.error('[humanizer] failed to consume usage', err);
+        });
+      }
       checkCredits();
+      refreshUsage();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
@@ -279,18 +347,17 @@ export default function HumanizerPage() {
               className="p-2 rounded-lg bg-slate-950 text-white hover:bg-slate-800 transition"
               aria-label="Back"
             >
-              <ArrowLeft size={18} />
+              Back
             </Link>
             <div>
               <p className="text-[10px] uppercase tracking-widest text-slate-500">
                 Tool
               </p>
               <h1 className="text-lg font-semibold flex items-center gap-2">
-                <Wand2 size={18} className="text-slate-950" />
-                AI Humanizer for Word Documents
-              </h1>
-            </div>
-          </div>
+                 AI Humanizer for Word Documents
+               </h1>
+             </div>
+           </div>
           <button
             onClick={() => checkCredits()}
             aria-label={
@@ -333,25 +400,19 @@ export default function HumanizerPage() {
               disabled={isBusy}
             />
             {file ? (
-              <>
-                <FileText size={36} className="text-slate-900" />
-                <div className="text-center">
-                  <p className="font-medium text-slate-950">{file.name}</p>
-                  <p className="text-xs text-slate-500">
-                    {(file.size / 1024).toFixed(1)} KB · click to replace
-                  </p>
-                </div>
-              </>
+              <div className="text-center">
+                <p className="font-medium text-slate-950">{file.name}</p>
+                <p className="text-xs text-slate-500">
+                  {(file.size / 1024).toFixed(1)} KB · click to replace
+                </p>
+              </div>
             ) : (
-              <>
-                <Upload size={36} className="text-slate-500" />
-                <div className="text-center">
-                  <p className="font-medium text-slate-950">Drop a .docx here or click to browse</p>
-                  <p className="text-xs text-slate-500">
-                    We preserve fonts, sizes, headings and layout.
-                  </p>
-                </div>
-              </>
+              <div className="text-center">
+                <p className="font-medium text-slate-950">Drop a .docx here or click to browse</p>
+                <p className="text-xs text-slate-500">
+                  We preserve fonts, sizes, headings and layout.
+                </p>
+              </div>
             )}
           </label>
         </section>
@@ -427,9 +488,130 @@ export default function HumanizerPage() {
                 {CREDIT_SAFETY_MULTIPLIER}× as a safety margin so jobs don&apos;t fail mid-run.
                 Sections under 50 characters are skipped.
               </div>
-            </div>
-          )}
-        </section>
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-900">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="font-semibold">Your local word budget</p>
+                    <p className="text-xs text-slate-500">
+                      {usage
+                        ? usage.unlimited
+                          ? 'Unlimited access enabled'
+                          : `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} words used`
+                        : 'Loading your account usage...'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRequestModalOpen(true)}
+                    disabled={!user}
+                    className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                  >
+                    Request more words
+                  </button>
+                </div>
+                {usage && !usage.unlimited && (
+                  <div className="mt-3 h-2 rounded-full bg-slate-200 overflow-hidden">
+                    <div
+                      className="h-full bg-slate-950 transition-all"
+                      style={{ width: `${Math.min(100, Math.round((usage.used / usage.limit) * 100))}%` }}
+                    />
+                  </div>
+                )}
+                {usageError && <p className="mt-3 text-xs text-rose-600">{usageError}</p>}
+              </div>
+              {requestModalOpen && (
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-900">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">Request more words</p>
+                      <p className="text-xs text-slate-500">
+                        Submit a request for an admin to increase your humanizer budget.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setRequestModalOpen(false)}
+                      className="rounded-xl bg-slate-100 px-3 py-2 text-sm text-slate-700 hover:bg-slate-200"
+                    >
+                      Close
+                    </button>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <label className="space-y-2 text-xs text-slate-500">
+                      Requested word limit
+                      <input
+                        type="number"
+                        min={1000}
+                        step={1000}
+                        value={requestLimit}
+                        disabled={requestBusy}
+                        onChange={(e) => setRequestLimit(Math.max(1000, Number(e.target.value) || DEFAULT_USAGE_LIMIT))}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-950 focus:border-slate-950"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-500">
+                      <span>Unlimited access</span>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={requestUnlimited}
+                          disabled={requestBusy}
+                          onChange={(e) => setRequestUnlimited(e.target.checked)}
+                          className="h-4 w-4 rounded border-slate-300 text-slate-950 focus:ring-slate-950"
+                        />
+                        <span className="text-sm text-slate-700">Request unlimited words</span>
+                      </div>
+                    </label>
+                  </div>
+                  <label className="mt-4 block text-xs text-slate-500">
+                    Message to admin
+                    <textarea
+                      value={requestMessage}
+                      disabled={requestBusy}
+                      onChange={(e) => setRequestMessage(e.target.value)}
+                      rows={4}
+                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-950 focus:border-slate-950"
+                    />
+                  </label>
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={requestBusy || !requestMessage.trim() || !user}
+                      onClick={async () => {
+                        if (!user) return;
+                        setRequestBusy(true);
+                        setRequestError(null);
+                        setRequestSuccess(null);
+                        try {
+                          await createCreditRequest({
+                            uid: user.uid,
+                            email: user.email ?? '',
+                            displayName: user.displayName ?? undefined,
+                            message: requestMessage.trim() || 'Requesting additional humanizer words.',
+                            requestedLimit: requestUnlimited ? null : requestLimit,
+                          });
+                          setRequestSuccess('Request submitted. An admin will review it shortly.');
+                          setRequestMessage('');
+                          setRequestUnlimited(false);
+                          setRequestLimit(DEFAULT_USAGE_LIMIT);
+                        } catch (err) {
+                          setRequestError(err instanceof Error ? err.message : 'Failed to submit request.');
+                        } finally {
+                          setRequestBusy(false);
+                        }
+                      }}
+                      className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                    >
+                      {requestBusy ? 'Submitting…' : 'Submit request'}
+                    </button>
+                    {requestSuccess && <p className="text-sm text-emerald-700">{requestSuccess}</p>}
+                    {requestError && <p className="text-sm text-rose-700">{requestError}</p>}
+                  </div>
+                </div>
+              )}
+             </div>
+           )}
+         </section>
 
         {/* Step 3: Run */}
         <section className="space-y-3">
@@ -437,10 +619,10 @@ export default function HumanizerPage() {
           <div className="flex flex-wrap items-center gap-3">
             <button
               onClick={start}
-              disabled={!file || isBusy || insufficientCredits}
+              disabled={startDisabled}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-950 text-white font-semibold shadow-lg shadow-slate-300/20 disabled:opacity-50 disabled:cursor-not-allowed hover:-translate-y-0.5 transition"
             >
-              {isBusy ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />}
+              {isBusy ? <Loader2 className="animate-spin" size={18} /> : null}
               {isBusy ? 'Processing…' : 'Start humanizing'}
             </button>
             {isBusy && (
@@ -448,7 +630,7 @@ export default function HumanizerPage() {
                 onClick={cancel}
                 className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10"
               >
-                <StopCircle size={16} /> Cancel
+                Cancel
               </button>
             )}
             {(phase === 'done' || phase === 'error') && (
@@ -490,10 +672,9 @@ export default function HumanizerPage() {
 
           {error && (
             <div className="flex items-start gap-2 p-3 rounded-xl bg-zinc-500/10 border border-zinc-500/30 text-zinc-200 text-sm">
-              <AlertCircle size={18} className="mt-0.5 flex-shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
+               <span>{error}</span>
+             </div>
+           )}
 
           {(credits !== null && insufficientCredits) && (
             <div className="w-full rounded-xl bg-zinc-50 border border-zinc-200 p-3 text-sm text-zinc-700">
@@ -539,23 +720,22 @@ export default function HumanizerPage() {
         {phase === 'done' && downloadUrl && (
           <section className="rounded-2xl border border-slate-200 bg-slate-50 p-6 flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <CheckCircle2 size={28} className="text-slate-950" />
-              <div>
-                <p className="font-semibold text-slate-950">Your humanized document is ready</p>
-                <p className="text-sm text-slate-700/80">
-                  Fonts, sizes and structure preserved.
-                </p>
-              </div>
-            </div>
-            <a
-              href={downloadUrl}
-              download={downloadName}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-950 hover:bg-slate-800 text-white font-semibold shadow-lg"
-            >
-              <Download size={18} /> Download {downloadName}
-            </a>
-          </section>
-        )}
+               <div>
+                 <p className="font-semibold text-slate-950">Your humanized document is ready</p>
+                 <p className="text-sm text-slate-700/80">
+                   Fonts, sizes and structure preserved.
+                 </p>
+               </div>
+             </div>
+             <a
+               href={downloadUrl}
+               download={downloadName}
+               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-950 hover:bg-slate-800 text-white font-semibold shadow-lg"
+             >
+              Download {downloadName}
+             </a>
+           </section>
+         )}
       </main>
     </div>
   );
@@ -585,9 +765,7 @@ function StatusCard({
 }
 
 function PhaseIcon({ phase }: { phase: ProgressUpdate['phase'] }) {
-  if (phase === 'error') return <XCircle size={16} className="text-zinc-500 mt-0.5" />;
-  if (phase === 'done') return <CheckCircle2 size={16} className="text-slate-950 mt-0.5" />;
-  return <Loader2 size={16} className="text-slate-600 animate-spin mt-0.5" />;
+  return <span className="mt-0.5 h-2.5 w-2.5 rounded-full bg-slate-400" />;
 }
 
 function Select({

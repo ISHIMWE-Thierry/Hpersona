@@ -52,6 +52,20 @@ service cloud.firestore {
       allow create: if request.auth != null 
         && request.auth.uid == request.resource.data.userId;
     }
+
+    match /humanizerUsage/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    match /humanizerRequests/{requestId} {
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+      allow get, list, update: if request.auth != null && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    match /users/{userId} {
+      allow read, create, update: if request.auth != null && request.auth.uid == userId;
+      allow list: if false;
+    }
   }
 }
 ```
