@@ -35,17 +35,26 @@ const openai = new OpenAI({
   },
 });
 
-// Claude Sonnet 4.5 gives the highest-quality literal translation across
-// Russian / European languages and reliably preserves the "¶¶¶" sentinel,
-// numbers, formulas, and citations. Override via env if needed.
-const TRANSLATION_MODEL =
+// Two-tier model selection:
+//   • standard: Claude Sonnet 4.5 — fast, cheap, excellent for the EN
+//     direction of the round-trip and for short / simple sections.
+//   • high: Claude Opus 4.1 — slower and pricier, but markedly better for
+//     non-Latin target languages (Russian / Arabic / CJK) where Sonnet can
+//     leak English fragments. Used for back-translation and for any section
+//     flagged as complex by the caller.
+// Both are overridable via env.
+const TRANSLATION_MODEL_STANDARD =
   process.env.HPERSONA_TRANSLATION_MODEL || 'anthropic/claude-sonnet-4.5';
+const TRANSLATION_MODEL_HIGH =
+  process.env.HPERSONA_TRANSLATION_MODEL_HIGH || 'anthropic/claude-opus-4.1';
 
 interface Body {
   mode?: 'detect' | 'translate';
   text?: string;
   from?: string;
   to?: string;
+  /** 'high' uses the bigger model; defaults to 'standard'. */
+  tier?: 'standard' | 'high';
 }
 
 const LANG_NAMES: Record<string, string> = {
@@ -102,10 +111,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    // Detect mode is short and cheap — always use the standard model.
     if (body.mode === 'detect') {
       const sample = text.slice(0, 1500);
       const resp = await openai.chat.completions.create({
-        model: TRANSLATION_MODEL,
+        model: TRANSLATION_MODEL_STANDARD,
         temperature: 0,
         max_tokens: 8,
         messages: [
@@ -150,7 +160,7 @@ export async function POST(req: NextRequest) {
     ].join('\n');
 
     const resp = await openai.chat.completions.create({
-      model: TRANSLATION_MODEL,
+      model: body.tier === 'high' ? TRANSLATION_MODEL_HIGH : TRANSLATION_MODEL_STANDARD,
       temperature: 0,
       messages: [
         { role: 'system', content: system },

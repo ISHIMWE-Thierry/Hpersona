@@ -56,6 +56,7 @@ export interface ProgressUpdate {
   phase:
     | 'parsing'
     | 'chunking'
+    | 'analyzing'
     | 'detecting-language'
     | 'translating'
     | 'humanizing'
@@ -74,6 +75,31 @@ export interface ProgressUpdate {
   skippedSections?: number;
   /** Detected source language (ISO 639-1). */
   language?: string;
+  /** Pre-flight document analysis. Shown to the user before humanizing starts. */
+  analysis?: DocumentAnalysis;
+}
+
+/** Pre-flight analysis of the uploaded .docx — surfaced to the user as a recommendation. */
+export interface DocumentAnalysis {
+  totalParagraphs: number;
+  totalSections: number;
+  humanizableSections: number;
+  totalWords: number;
+  humanizableWords: number;
+  skippedFormulas: number;
+  skippedTables: number;
+  skippedHeadings: number;
+  skippedDrawings: number;
+  skippedHyperlinks: number;
+  skippedFields: number;
+  /** Suggested words-per-chunk for best balance of speed vs. quality. */
+  recommendedWordsPerChunk: number;
+  /** Average words per section in the current chunking. */
+  avgWordsPerSection: number;
+  /** Largest single section (in words) — used to flag chunks that may exceed credits. */
+  maxWordsPerSection: number;
+  /** Free-form one-line recommendation shown to the user. */
+  recommendation: string;
 }
 
 /**
@@ -219,7 +245,209 @@ function classifyParagraph(p: Element): { humanizable: boolean; reason?: string 
     }
   }
 
+  // Text-based formula / equation detection. Word stores many formulas as
+  // plain text (especially when copy-pasted from LaTeX, MathType, or
+  // exported PDFs), so OMML detection above isn't enough. We look at the
+  // raw paragraph text and bail out if it looks like an equation.
+  const rawText = (p.textContent || '').trim();
+  if (rawText && looksLikeFormula(rawText)) {
+    return { humanizable: false, reason: 'formula/text-math' };
+  }
+
   return { humanizable: true };
+}
+
+/**
+ * Heuristic detector for paragraphs that *look like* a formula even though
+ * they're stored as plain text. We deliberately err on the side of skipping
+ * because mangling an equation in a thesis is far worse than leaving a
+ * formula-like sentence un-humanized.
+ *
+ * Triggers (any one is enough):
+ *   • Inline LaTeX delimiters: $...$, \(...\), \[...\]
+ *   • LaTeX commands: \partial, \mu, \displaystyle, \mathcal, \Gamma, \nabla,
+ *     \xi, \alpha, \frac, \sum, \int, \sqrt, \begin, \end, \cdot, etc.
+ *   • Pseudo-LaTeX in braces: {\displaystyle ...}, {\mathcal ...}
+ *   • Equation-numbering tail: text that ends with "(n.n)" or "(n)"
+ *   • Math-symbol density: > 12% of non-space characters are math symbols
+ *     (∂∇∑∏∫√≈≠≤≥±×÷⊗⊕∈∉∀∃Γξμνφψχωθλσπραβγδε…) or sub/superscripts
+ *   • Mostly equation tokens: short text that is dominated by `=`, brackets,
+ *     numbers, single-letter identifiers and operators (e.g. "ds²=Exp[...]")
+ */
+function looksLikeFormula(text: string): boolean {
+  // 1. LaTeX delimiters
+  if (/\$[^$\n]{2,}\$/.test(text)) return true;
+  if (/\\\([^)]*\\\)/.test(text)) return true;
+  if (/\\\[[^\]]*\\\]/.test(text)) return true;
+
+  // 2. LaTeX commands (\word) — needs at least 2 distinct commands OR one
+  // strong command to avoid false positives on the occasional backslash.
+  const latexCmds = text.match(/\\[a-zA-Z]{2,}/g) || [];
+  if (latexCmds.length >= 2) return true;
+  const strongLatex =
+    /\\(displaystyle|mathcal|mathbb|mathrm|frac|sum|int|sqrt|partial|nabla|begin|end|left|right|cdot|times|otimes|oplus|infty|alpha|beta|gamma|delta|theta|lambda|sigma|omega|mu|nu|xi|phi|psi|chi|rho|tau|epsilon|Gamma|Lambda|Sigma|Omega|Phi|Psi|Theta|Delta)\b/.test(
+      text
+    );
+  if (strongLatex) return true;
+
+  // 3. {\displaystyle ...}, {\mathcal ...} pseudo-LaTeX (Wikipedia-style)
+  if (/\{\\[a-zA-Z]/.test(text)) return true;
+
+  // 4. Math-symbol density. We look at alphanumeric+symbol characters only
+  // (exclude whitespace) and check what fraction are math glyphs.
+  const noSpace = text.replace(/\s+/g, '');
+  if (noSpace.length >= 8) {
+    const mathChars =
+      noSpace.match(
+        // Math operators, Greek letters, sub/superscripts, set theory, arrows
+        /[∂∇∑∏∫√≈≠≤≥±×÷⊗⊕∈∉∀∃∅∞∝∼≡⊂⊃⊆⊇∪∩→←↔⇒⇐⇔αβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ₀₁₂₃₄₅₆₇₈₉⁰¹²³⁴⁵⁶⁷⁸⁹]/gu
+      ) || [];
+    const ratio = mathChars.length / noSpace.length;
+    if (ratio >= 0.12) return true;
+  }
+
+  // 5. Equation-numbering tail. A short paragraph that is essentially
+  // "<expression> (5.9)" or "<expression> (3.1)".
+  if (text.length < 400 && /\(\s*\d+(\.\d+)?\s*\)\s*$/.test(text)) {
+    // Also require it to *look* like an expression — at least one '=' or
+    // a math/Greek/sub-superscript glyph.
+    if (
+      /=/.test(text) ||
+      /[∂∇∑∏∫√αβγδεζηθλμνξπρστφχψωΓΔΛΣΦΨΩ₀₁₂₃⁰¹²³]/u.test(text)
+    ) {
+      return true;
+    }
+  }
+
+  // 6. Equation-token-dominated short lines: "ds²=Exp[Φ₁₁+(Φ₁₂+Φ₂₂)X₂](dX₁²−X₁²dX₂²)..."
+  // — text under 600 chars where a high fraction of characters are operators,
+  // brackets, digits, single-letter identifiers, or sub/superscripts.
+  if (text.length < 600 && /=/.test(text)) {
+    const opChars =
+      noSpace.match(
+        /[=+\-*/^()[\]{}|·×÷±∂∇∑∏∫√αβγδεζηθικλμνξπρστυφχψωΓΔΛΣΦΨΩ₀₁₂₃₄₅₆₇₈₉⁰¹²³⁴⁵⁶⁷⁸⁹]/gu
+      ) || [];
+    const digits = noSpace.match(/[0-9]/g) || [];
+    const opRatio = (opChars.length + digits.length) / noSpace.length;
+    if (opRatio >= 0.35) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Pre-flight analysis: count paragraphs by skip reason, total words, and
+ * suggest a `targetWordsPerChunk` value. Larger chunks → fewer API calls and
+ * better cross-paragraph coherence; smaller chunks → safer for credit usage
+ * and recover faster on transient failures. We pick a sweet spot based on
+ * total document size.
+ */
+function analyzeDocument(
+  paragraphs: ParagraphChunk[],
+  sections: SectionChunk[],
+  currentTarget: number
+): DocumentAnalysis {
+  let totalWords = 0;
+  let humanizableWords = 0;
+  let skippedFormulas = 0;
+  let skippedTables = 0;
+  let skippedHeadings = 0;
+  let skippedDrawings = 0;
+  let skippedHyperlinks = 0;
+  let skippedFields = 0;
+
+  for (const p of paragraphs) {
+    const w = countWords(p.text);
+    totalWords += w;
+    if (p.humanizable) {
+      humanizableWords += w;
+      continue;
+    }
+    const r = p.skipReason || '';
+    if (r.startsWith('formula')) skippedFormulas += 1;
+    else if (r === 'table') skippedTables += 1;
+    else if (r.startsWith('style:') || r.startsWith('heading')) skippedHeadings += 1;
+    else if (r.includes('image') || r.includes('drawing') || r.includes('object'))
+      skippedDrawings += 1;
+    else if (r === 'hyperlink') skippedHyperlinks += 1;
+    else if (r.includes('field') || r.includes('TOC')) skippedFields += 1;
+  }
+
+  const meaningful = sections.filter(
+    (s) => s.wordCount > 0 && s.text.trim().length >= 50
+  );
+  const avgWordsPerSection =
+    meaningful.length > 0
+      ? Math.round(
+          meaningful.reduce((sum, s) => sum + s.wordCount, 0) / meaningful.length
+        )
+      : 0;
+  const maxWordsPerSection = meaningful.reduce(
+    (m, s) => (s.wordCount > m ? s.wordCount : m),
+    0
+  );
+
+  // Recommendation curve. The undetectable.AI sweet spot for quality is
+  // 200–350 words/chunk: large enough for context, small enough that the
+  // model preserves meaning. We push toward bigger chunks for huge docs to
+  // keep total API calls reasonable.
+  let recommended: number;
+  if (humanizableWords < 1500) recommended = 250;
+  else if (humanizableWords < 8000) recommended = 300;
+  else if (humanizableWords < 25_000) recommended = 350;
+  else recommended = 400;
+
+  const skippedTotal =
+    skippedFormulas +
+    skippedTables +
+    skippedHeadings +
+    skippedDrawings +
+    skippedHyperlinks +
+    skippedFields;
+
+  const recommendation =
+    `Document has ~${totalWords.toLocaleString()} words, ` +
+    `${humanizableWords.toLocaleString()} humanizable across ${meaningful.length} sections. ` +
+    `Skipped (preserved verbatim): ${skippedTotal} paragraph(s) — ` +
+    `${skippedFormulas} formula, ${skippedTables} table, ${skippedHeadings} heading, ` +
+    `${skippedDrawings} image, ${skippedHyperlinks} link, ${skippedFields} field. ` +
+    (recommended === currentTarget
+      ? `Current chunk size (${currentTarget} words) is optimal.`
+      : `Recommended chunk size: ${recommended} words/section (currently ${currentTarget}).`);
+
+  return {
+    totalParagraphs: paragraphs.length,
+    totalSections: sections.length,
+    humanizableSections: meaningful.length,
+    totalWords,
+    humanizableWords,
+    skippedFormulas,
+    skippedTables,
+    skippedHeadings,
+    skippedDrawings,
+    skippedHyperlinks,
+    skippedFields,
+    recommendedWordsPerChunk: recommended,
+    avgWordsPerSection,
+    maxWordsPerSection,
+    recommendation,
+  };
+}
+
+/**
+ * After translating a humanized section back to the original language we
+ * sometimes see English fragments leak through (the model occasionally keeps
+ * an English clause intact). For non-Latin-script target languages this is
+ * detectable: we measure the ratio of Latin letters in the result vs. the
+ * original. If the leak is significant we count it; the caller can decide to
+ * retry the translation with a stronger prompt.
+ */
+function latinLeakRatio(text: string): number {
+  // Strip whitespace and punctuation. Compare Latin letters to total letters.
+  const letters = text.match(/\p{L}/gu) || [];
+  if (letters.length === 0) return 0;
+  const latin = letters.filter((c) => /[A-Za-z]/.test(c)).length;
+  return latin / letters.length;
 }
 
 /** Extract paragraphs and their runs from document.xml */
@@ -423,7 +651,8 @@ async function translateText(
   text: string,
   from: string,
   to: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  tier: 'standard' | 'high' = 'standard'
 ): Promise<string> {
   if (from === to) return text;
   // OpenRouter has a per-call context limit. Translate up to ~25k chars; if
@@ -431,12 +660,12 @@ async function translateText(
   // sentinel and translate each piece individually so nothing gets dropped.
   const HARD_LIMIT = 25_000;
   if (text.length <= HARD_LIMIT) {
-    return translateOnce(text, from, to, signal);
+    return translateOnce(text, from, to, signal, tier);
   }
   const parts = text.split(PARAGRAPH_SENTINEL);
   const out: string[] = [];
   for (const part of parts) {
-    out.push(await translateOnce(part, from, to, signal));
+    out.push(await translateOnce(part, from, to, signal, tier));
   }
   return out.join(PARAGRAPH_SENTINEL);
 }
@@ -445,7 +674,8 @@ async function translateOnce(
   text: string,
   from: string,
   to: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  tier: 'standard' | 'high' = 'standard'
 ): Promise<string> {
   let lastError: Error | null = null;
   for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -455,7 +685,7 @@ async function translateOnce(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal,
-        body: JSON.stringify({ mode: 'translate', text, from, to }),
+        body: JSON.stringify({ mode: 'translate', text, from, to, tier }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         text?: string;
@@ -614,6 +844,19 @@ export async function humanizeDocxFile(
     current: 0,
   });
 
+  // ── Pre-flight document analysis ─────────────────────────────────────────
+  // Tell the user what we found, what we'll skip, and recommend an optimal
+  // chunk size. This makes the run predictable and lets advanced users
+  // re-tune `targetWordsPerChunk` for the next run.
+  const analysis = analyzeDocument(paragraphs, sections, options.targetWordsPerChunk);
+  onProgress({
+    phase: 'analyzing',
+    message: analysis.recommendation,
+    total: meaningful.length,
+    current: 0,
+    analysis,
+  });
+
   // ── Detect document language ─────────────────────────────────────────────
   // The humanizer model is tuned for English. For non-English documents we
   // round-trip: translate section → English → humanize → translate back.
@@ -713,7 +956,67 @@ export async function humanizeDocxFile(
             total: meaningful.length,
             language: docLang,
           });
-          humanized = await translateText(humanizedEn, 'en', docLang, signal);
+          let backTranslated = await translateText(
+            humanizedEn,
+            'en',
+            docLang,
+            signal,
+            // Non-Latin targets get the bigger model up-front: Sonnet leaks
+            // English into Russian/Arabic/CJK output more than Opus does.
+            /^(ru|uk|bg|sr|mk|be|el|ar|he|fa|ur|zh|ja|ko|hi|th|ka|hy)$/.test(docLang)
+              ? 'high'
+              : 'standard'
+          );
+
+          // Language-leak guard. If we expected non-Latin output (Russian,
+          // Greek, Arabic, Chinese, Japanese, Korean, Hindi…) but the result
+          // contains a high ratio of Latin letters, the model leaked English.
+          // Retry once via translateText (which itself escalates) and then
+          // fall back to the original section text rather than ship a
+          // half-English thesis paragraph.
+          const nonLatinTargets = new Set([
+            'ru', 'uk', 'bg', 'sr', 'mk', 'be',
+            'el', 'ar', 'he', 'fa', 'ur',
+            'zh', 'ja', 'ko', 'hi', 'th', 'ka', 'hy',
+          ]);
+          if (nonLatinTargets.has(docLang)) {
+            const originalLeak = latinLeakRatio(section.text);
+            const resultLeak = latinLeakRatio(backTranslated);
+            // Allow a margin: original may legitimately have some Latin
+            // (formulas, citations, names). Only flag if the result is
+            // significantly more Latin-heavy than the source.
+            if (resultLeak > originalLeak + 0.15 && resultLeak > 0.25) {
+              onProgress({
+                phase: 'translating',
+                message: `Section ${processed}/${meaningful.length}: detected English leak (${Math.round(resultLeak * 100)}%), retrying back-translation…`,
+                current: processed,
+                total: meaningful.length,
+                language: docLang,
+                warning: true,
+              });
+              try {
+                const retry = await translateText(humanizedEn, 'en', docLang, signal, 'high');
+                if (latinLeakRatio(retry) <= originalLeak + 0.15) {
+                  backTranslated = retry;
+                } else {
+                  // Still leaking — keep the original text for this section
+                  // (formatting preserved, words unchanged).
+                  onProgress({
+                    phase: 'translating',
+                    message: `Section ${processed}/${meaningful.length}: back-translation still leaking English — kept original text.`,
+                    current: processed,
+                    total: meaningful.length,
+                    language: docLang,
+                    warning: true,
+                  });
+                  backTranslated = section.text;
+                }
+              } catch {
+                backTranslated = section.text;
+              }
+            }
+          }
+          humanized = backTranslated;
         } else {
           humanized = humanizedEn;
         }
