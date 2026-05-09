@@ -120,93 +120,98 @@ ${orderData.deliveryMethod === 'mobile_money'
   // Empty state - clean minimal welcome
   if (messages.length === 0) {
     return (
-      <div className="flex flex-col h-full min-h-[400px] sm:min-h-[480px] items-center justify-center px-3 sm:px-4 safe-area-inset">
-        <div className="w-full max-w-2xl mx-auto">
-          {/* Welcome Header - Professional logo without background */}
-          <div className="text-center mb-8">
+      <div className="relative flex flex-col h-full min-h-[400px] sm:min-h-[480px] safe-area-inset">
+        {/* Welcome header — centered in the available vertical space */}
+        <div className="flex-1 flex items-center justify-center px-3 sm:px-4">
+          <div className="text-center">
             <IkambaLogo className="h-16 w-16 sm:h-20 sm:w-20 text-primary mx-auto mb-4" />
             <p className="text-muted-foreground text-sm">
               How can I help you today?
             </p>
           </div>
+        </div>
 
-          {uploadedImages.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-3 justify-center">
-              {uploadedImages.map((url, index) => (
-                <div key={index} className="relative group">
-                  <img src={url} alt="Upload preview" className="h-12 w-12 sm:h-14 sm:w-14 object-cover rounded-lg border border-border" />
-                  <button 
-                    type="button" 
-                    onClick={() => handleRemoveImage(index)} 
-                    className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center"
+        {/* Bottom-anchored input — same layout as the messages view */}
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background via-background to-transparent pt-4 sm:pt-6 pb-3 sm:pb-4 px-2 sm:px-4 safe-area-inset-bottom">
+          <div className="max-w-2xl mx-auto">
+            {uploadedImages.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3 justify-center">
+                {uploadedImages.map((url, index) => (
+                  <div key={index} className="relative group">
+                    <img src={url} alt="Upload preview" className="h-12 w-12 sm:h-14 sm:w-14 object-cover rounded-lg border border-border" />
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveImage(index)}
+                      className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleFileSelect} className="hidden" />
+
+            <form onSubmit={handleSubmit} className="w-full">
+              <div className="flex items-center gap-1.5 sm:gap-2 bg-muted/50 backdrop-blur-lg border border-border rounded-full px-2 h-12 sm:h-14">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isStreaming || isUploading}
+                  className="flex-shrink-0 rounded-full flex items-center justify-center transition-all bg-zinc-800 hover:bg-zinc-700 text-white disabled:opacity-50 h-8 w-8 sm:h-10 sm:w-10"
+                  title="Attach files"
+                >
+                  {isUploading ? <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" /> : <Plus className="h-4 w-4 sm:h-5 sm:w-5" />}
+                </button>
+
+                <div className="flex items-center gap-0.5 sm:gap-1 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setMode('thinking')}
+                    className={cn(
+                      "flex items-center gap-1 rounded-full text-[10px] sm:text-xs font-medium transition-all px-2 py-1 sm:px-3 sm:py-1.5",
+                      mode === 'thinking' ? "bg-zinc-900 text-white" : "text-zinc-400 hover:text-white hover:bg-zinc-800"
+                    )}
                   >
-                    <X className="h-3 w-3" />
+                    <Brain className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+                    <span className="hidden sm:inline">Advanced</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode('gpt')}
+                    className={cn(
+                      "flex items-center gap-1 rounded-full text-[10px] sm:text-xs font-medium transition-all px-2 py-1 sm:px-3 sm:py-1.5",
+                      mode === 'gpt' ? "bg-zinc-900 text-white" : "text-zinc-400 hover:text-white hover:bg-zinc-800"
+                    )}
+                  >
+                    <Zap className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+                    <span className="hidden sm:inline">Chat</span>
                   </button>
                 </div>
-              ))}
-            </div>
-          )}
 
-          <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleFileSelect} className="hidden" />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Type something..."
+                  className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground text-sm sm:text-base"
+                  disabled={isStreaming || isUploading}
+                />
 
-          <form onSubmit={handleSubmit} className="w-full px-2">
-            <div className="flex items-center gap-1.5 sm:gap-2 bg-muted/50 backdrop-blur-lg border border-border rounded-full px-2 h-12 sm:h-14">
-              <button 
-                type="button" 
-                onClick={() => fileInputRef.current?.click()} 
-                disabled={isStreaming || isUploading} 
-                className="flex-shrink-0 rounded-full flex items-center justify-center transition-all bg-zinc-800 hover:bg-zinc-700 text-white disabled:opacity-50 h-8 w-8 sm:h-10 sm:w-10"
-                title="Attach files"
-              >
-                {isUploading ? <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" /> : <Plus className="h-4 w-4 sm:h-5 sm:w-5" />}
-              </button>
-
-              <div className="flex items-center gap-0.5 sm:gap-1 flex-shrink-0">
-                <button 
-                  type="button" 
-                  onClick={() => setMode('thinking')} 
-                  className={cn(
-                    "flex items-center gap-1 rounded-full text-[10px] sm:text-xs font-medium transition-all px-2 py-1 sm:px-3 sm:py-1.5",
-                    mode === 'thinking' ? "bg-zinc-900 text-white" : "text-zinc-400 hover:text-white hover:bg-zinc-800"
-                  )}
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={(!input.trim() && uploadedImages.length === 0) || isStreaming || isUploading}
+                  className="flex-shrink-0 rounded-full bg-primary hover:bg-primary/90 h-8 w-8 sm:h-10 sm:w-10 p-0"
                 >
-                  <Brain className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
-                  <span className="hidden sm:inline">Advanced</span>
-                </button>
-                <button 
-                  type="button" 
-                  onClick={() => setMode('gpt')} 
-                  className={cn(
-                    "flex items-center gap-1 rounded-full text-[10px] sm:text-xs font-medium transition-all px-2 py-1 sm:px-3 sm:py-1.5",
-                    mode === 'gpt' ? "bg-zinc-900 text-white" : "text-zinc-400 hover:text-white hover:bg-zinc-800"
-                  )}
-                >
-                  <Zap className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
-                  <span className="hidden sm:inline">Chat</span>
-                </button>
+                  {isStreaming ? <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" /> : <Send className="h-4 w-4 sm:h-5 sm:w-5" />}
+                </Button>
               </div>
-
-              <input
-                ref={inputRef}
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Type something..."
-                className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground text-sm sm:text-base"
-                disabled={isStreaming || isUploading}
-              />
-
-              <Button 
-                type="submit" 
-                size="sm"
-                disabled={(!input.trim() && uploadedImages.length === 0) || isStreaming || isUploading} 
-                className="flex-shrink-0 rounded-full bg-primary hover:bg-primary/90 h-8 w-8 sm:h-10 sm:w-10 p-0"
-              >
-                {isStreaming ? <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" /> : <Send className="h-4 w-4 sm:h-5 sm:w-5" />}
-              </Button>
-            </div>
-          </form>
+            </form>
+          </div>
         </div>
       </div>
     );
