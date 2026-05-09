@@ -66,9 +66,9 @@ export default function HumanizerPage() {
   const abortRef = useRef<AbortController | null>(null);
 
   const [readability, setReadability] = useState('University');
-  const [purpose, setPurpose] = useState('Essay');
+  const [purpose, setPurpose] = useState('Article');
   const [strength, setStrength] = useState('More Human');
-  const [model, setModel] = useState('v11');
+  const [model, setModel] = useState('v2');
   const [chunkWords, setChunkWords] = useState(300);
 
   const { user } = useAuth();
