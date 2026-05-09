@@ -10,7 +10,7 @@ interface CreateBody {
   plan?: 'monthly_pro';
 }
 
-const PRICE_RUB = 100;
+const PRICE_RUB = 1000;
 
 export async function POST(req: NextRequest) {
   try {

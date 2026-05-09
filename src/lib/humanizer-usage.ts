@@ -27,7 +27,7 @@ import {
 import { db } from './firebase';
 
 export const DEFAULT_USAGE_LIMIT = 20_000; // words humanized per user
-export const PRO_PRICE_RUB = 100;
+export const PRO_PRICE_RUB = 1000;
 export const PRO_DURATION_DAYS = 30;
 
 export interface UsageDoc {

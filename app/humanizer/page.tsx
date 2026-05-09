@@ -254,7 +254,7 @@ export default function HumanizerPage() {
       if (cancelled) return;
       attempts += 1;
       try {
-        const r = await fetch(`/api/humanizer/payment/status?orderId=${encodeURIComponent(orderId!)}`);
+        const r = await fetch(`/api/ai-services/payment/status?orderId=${encodeURIComponent(orderId!)}`);
         const d = await r.json();
         if (d?.ok && d.data?.status === 'active') {
           setProPaymentSuccess(true);
@@ -470,7 +470,7 @@ export default function HumanizerPage() {
     setProCheckoutBusy(true);
     setProCheckoutError(null);
     try {
-      const r = await fetch('/api/humanizer/payment/create', {
+      const r = await fetch('/api/ai-services/payment/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

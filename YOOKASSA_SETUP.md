@@ -1,22 +1,22 @@
 # YooKassa Pro Subscription Setup
 
-Hpersona Pro = **100 ₽ / month** for unlimited humanization. Implemented via
+Hpersona Pro = **1000 ₽ / month** for unlimited humanization. Implemented via
 [YooKassa](https://yookassa.ru/) — Russia's most popular payment gateway
 (supports Visa, Mastercard, Mir, SBP, YooMoney).
 
 ## Flow
 
-1. User clicks **Upgrade to Pro — 100₽** on `/humanizer`.
-2. `POST /api/humanizer/payment/create` creates a `humanizerOrders/{id}` doc
+1. User clicks **Upgrade to Pro — 1000₽** on `/humanizer`.
+2. `POST /api/ai-services/payment/create` creates a `humanizerOrders/{id}` doc
    (status `pending_payment`) and a YooKassa payment, then returns a
    `confirmation_url`.
 3. The browser is redirected to YooKassa's hosted payment page.
-4. After payment, YooKassa POSTs to `POST /api/humanizer/payment/webhook`. The
+4. After payment, YooKassa POSTs to `POST /api/ai-services/payment/webhook`. The
    webhook re-fetches the payment from YooKassa's API (never trusts the body),
    then sets `humanizerUsage/{uid}.proUntil = now + 30 days` and marks the
    order `active`.
 5. The user is redirected back to `/humanizer?payment=success`. The page polls
-   `GET /api/humanizer/payment/status?orderId=...` until the order flips to
+   `GET /api/ai-services/payment/status?orderId=...` until the order flips to
    `active`, then shows a green Pro banner.
 
 ## Required env vars
@@ -44,7 +44,7 @@ FIREBASE_ADMIN_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVA
 In your YooKassa dashboard under **Integration → HTTP notifications**, add:
 
 ```
-https://your-domain.com/api/humanizer/payment/webhook
+https://your-domain.com/api/ai-services/payment/webhook
 ```
 
 Subscribe to events:
