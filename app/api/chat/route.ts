@@ -54,8 +54,19 @@ const openai = new OpenAI({
 });
 
 const AI_MODEL = process.env.OPENROUTER_API_KEY
-  ? process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free'
+  ? process.env.OPENROUTER_MODEL || 'openai/gpt-oss-120b:free'
   : 'meta/llama-3.3-70b-instruct';
+
+// Boot-time log so you can confirm which backend is actually wired in.
+const AI_BACKEND = process.env.OPENROUTER_API_KEY
+  ? 'openrouter'
+  : process.env.NVIDIA_API_KEY
+  ? 'nvidia'
+  : 'openai';
+console.log(`[Chat] backend=${AI_BACKEND} model=${AI_MODEL}`);
+
+// Allow this route up to 60s on Vercel.
+export const maxDuration = 60;
 
 // Tools/Functions for OpenAI to call
 const tools: OpenAI.ChatCompletionTool[] = [
@@ -1439,149 +1450,139 @@ Transfer is being processed. You will receive confirmation shortly.`;
     }
 
     // Single streaming call (OpenRouter / NVIDIA — both OpenAI-compatible).
-    console.log(`[AI Selection] Using ${AI_MODEL} for ${isWhatsAppUser ? 'WhatsApp' : 'Web'} user`);
+    const reqStart = Date.now();
+    let firstTokenAt = 0;
+    console.log(`[AI] backend=${AI_BACKEND} model=${AI_MODEL} ${isWhatsAppUser ? 'WhatsApp' : 'Web'} msgs=${messagesWithSystem.length}`);
 
-    // Single streaming call — accumulate to check for tool calls, then either
-    // process tools and do a second streaming call, or forward directly to client.
-    // This avoids the non-streaming first call that was timing out on NVIDIA's API.
-    const initialResponse = await openai.chat.completions.create({
-      model: AI_MODEL,
-      messages: messagesWithSystem,
-      tools: tools,
-      tool_choice: 'auto',
-      temperature: 0,
-      stream: true,
-      max_tokens: 4096,
-    });
-
-    // Accumulate the streamed response to detect tool calls
-    let accumulatedContent = '';
-    let accumulatedToolCalls: any[] = [];
-    let finishReason = '';
-
-    for await (const chunk of initialResponse) {
-      const delta = chunk.choices[0]?.delta;
-      if (delta?.content) {
-        accumulatedContent += delta.content;
-      }
-      if (delta?.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          const idx = tc.index ?? 0;
-          if (!accumulatedToolCalls[idx]) {
-            accumulatedToolCalls[idx] = { id: tc.id || '', function: { name: '', arguments: '' } };
-          }
-          if (tc.id) accumulatedToolCalls[idx].id = tc.id;
-          if (tc.function?.name) accumulatedToolCalls[idx].function.name += tc.function.name;
-          if (tc.function?.arguments) accumulatedToolCalls[idx].function.arguments += tc.function.arguments;
-        }
-      }
-      if (chunk.choices[0]?.finish_reason) {
-        finishReason = chunk.choices[0].finish_reason;
-      }
-    }
-
-    // Filter out empty tool calls (NVIDIA sometimes returns tool_calls: [])
-    accumulatedToolCalls = accumulatedToolCalls.filter(tc => tc && tc.function?.name);
-
-    // Check if AI wants to call a function
-    if (accumulatedToolCalls.length > 0) {
-      const toolResults: any[] = [];
-      
-      // Process each tool call
-      for (const toolCall of accumulatedToolCalls) {
-        const functionName = toolCall.function?.name;
-        const functionArgs = JSON.parse(toolCall.function?.arguments || '{}');
-        
-        console.log(`AI calling function: ${functionName}`, functionArgs);
-        
-        // Pass activeUserInfo (verified WhatsApp user's real account) and latestUserImage to the function handler
-        const result = await handleFunctionCall(functionName, functionArgs, activeUserInfo, latestUserImage);
-        toolResults.push({
-          tool_call_id: toolCall.id,
-          role: 'tool' as const,
-          content: result,
-        });
-      }
-      
-      // Build the assistant message with tool calls for the conversation
-      const assistantMsg: any = { role: 'assistant', content: accumulatedContent || null, tool_calls: accumulatedToolCalls };
-      messagesWithSystem.push(assistantMsg);
-      messagesWithSystem.push(...toolResults);
-      
-      // Get final response after function execution
-      const finalResponse = await openai.chat.completions.create({
-        model: AI_MODEL,
-        messages: messagesWithSystem,
-        temperature: 0,
-        stream: true,
-        max_tokens: 4096,
-      });
-      
-      // Stream the final response with malformed tag fixing
-      const encoder = new TextEncoder();
-      const stream = new ReadableStream({
-        async start(controller) {
-          try {
-            let buffer = '';
-            let isBufferingTag = false;
-            
-            for await (const chunk of finalResponse) {
-              const content = chunk.choices[0]?.delta?.content || '';
-              if (content) {
-                buffer += content;
-                
-                // Check if we're starting a tag
-                if (buffer.includes('[[') && !buffer.includes(']]')) {
-                  isBufferingTag = true;
-                  // Don't send yet - wait for complete tag
-                  continue;
-                }
-                
-                // Check if buffer contains a complete tag
-                if (buffer.includes('[[') && buffer.includes(']]')) {
-                  // Fix malformed tags before sending
-                  buffer = fixMalformedTransferTag(buffer);
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
-                  buffer = '';
-                  isBufferingTag = false;
-                } else if (!isBufferingTag) {
-                  // No tag - send content directly
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
-                  buffer = '';
-                }
-              }
-            }
-            // Send any remaining buffer
-            if (buffer) {
-              buffer = fixMalformedTransferTag(buffer);
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
-            }
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-            controller.close();
-          } catch (error) {
-            controller.error(error);
-          }
-        },
-      });
-
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-        },
-      });
-    }
-
-    // No function call — we already accumulated the content from the streamed first call.
-    // Fix any malformed tags and return it as an SSE stream.
-    const fixedContent = fixMalformedTransferTag(accumulatedContent);
+    // Unified streaming response. We pipe the FIRST call's content deltas
+    // straight to the client (no full-buffer wait). If a tool_call appears,
+    // we still execute the tool and stream the second call right after. The
+    // tag-aware flush keeps [[TRANSFER:…]] / [[PAYMENT:…]] / [[RECIPIENT:…]]
+    // tags intact across SSE chunks so the UI can parse them.
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: fixedContent })}\n\n`));
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
+      async start(controller) {
+        let buffer = '';
+        let isBufferingTag = false;
+
+        const flushChunk = (content: string) => {
+          if (!content) return;
+          buffer += content;
+          // Hold back if we've opened a tag but haven't seen its close yet.
+          if (buffer.includes('[[') && !buffer.includes(']]')) {
+            isBufferingTag = true;
+            return;
+          }
+          if (buffer.includes('[[') && buffer.includes(']]')) {
+            buffer = fixMalformedTransferTag(buffer);
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
+            buffer = '';
+            isBufferingTag = false;
+          } else if (!isBufferingTag) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
+            buffer = '';
+          }
+        };
+
+        const flushRemaining = () => {
+          if (buffer) {
+            buffer = fixMalformedTransferTag(buffer);
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: buffer })}\n\n`));
+            buffer = '';
+            isBufferingTag = false;
+          }
+        };
+
+        try {
+          const initialResponse = await openai.chat.completions.create({
+            model: AI_MODEL,
+            messages: messagesWithSystem,
+            tools: tools,
+            tool_choice: 'auto',
+            temperature: 0,
+            stream: true,
+            max_tokens: 1024,
+          });
+
+          let accumulatedContent = '';
+          let accumulatedToolCalls: any[] = [];
+
+          for await (const chunk of initialResponse) {
+            const delta = chunk.choices[0]?.delta;
+            if (delta?.content) {
+              if (!firstTokenAt) {
+                firstTokenAt = Date.now();
+                console.log(`[AI] first-token=${firstTokenAt - reqStart}ms`);
+              }
+              accumulatedContent += delta.content;
+              flushChunk(delta.content);
+            }
+            if (delta?.tool_calls) {
+              for (const tc of delta.tool_calls) {
+                const idx = tc.index ?? 0;
+                if (!accumulatedToolCalls[idx]) {
+                  accumulatedToolCalls[idx] = { id: tc.id || '', function: { name: '', arguments: '' } };
+                }
+                if (tc.id) accumulatedToolCalls[idx].id = tc.id;
+                if (tc.function?.name) accumulatedToolCalls[idx].function.name += tc.function.name;
+                if (tc.function?.arguments) accumulatedToolCalls[idx].function.arguments += tc.function.arguments;
+              }
+            }
+          }
+
+          // Filter out empty tool calls (some providers return tool_calls: [])
+          accumulatedToolCalls = accumulatedToolCalls.filter(tc => tc && tc.function?.name);
+
+          if (accumulatedToolCalls.length > 0) {
+            // Flush any preamble content that streamed before the tool call.
+            flushRemaining();
+
+            const toolResults: any[] = [];
+            for (const toolCall of accumulatedToolCalls) {
+              const functionName = toolCall.function?.name;
+              const functionArgs = JSON.parse(toolCall.function?.arguments || '{}');
+              console.log(`[AI] tool=${functionName}`);
+              const result = await handleFunctionCall(functionName, functionArgs, activeUserInfo, latestUserImage);
+              toolResults.push({
+                tool_call_id: toolCall.id,
+                role: 'tool' as const,
+                content: result,
+              });
+            }
+
+            const assistantMsg: any = { role: 'assistant', content: accumulatedContent || null, tool_calls: accumulatedToolCalls };
+            messagesWithSystem.push(assistantMsg);
+            messagesWithSystem.push(...toolResults);
+
+            const finalResponse = await openai.chat.completions.create({
+              model: AI_MODEL,
+              messages: messagesWithSystem,
+              temperature: 0,
+              stream: true,
+              max_tokens: 1024,
+            });
+
+            for await (const chunk of finalResponse) {
+              const c = chunk.choices[0]?.delta?.content || '';
+              if (c) flushChunk(c);
+            }
+          }
+
+          flushRemaining();
+          console.log(`[AI] total=${Date.now() - reqStart}ms`);
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        } catch (err: any) {
+          console.error('[AI] stream error:', err?.message || err);
+          const friendly = err?.status === 429
+            ? 'The AI service is rate-limited right now. Please try again in a moment.'
+            : err?.status === 402
+            ? 'AI quota exceeded. Please contact support.'
+            : 'Sorry, I had trouble responding. Please try again.';
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: friendly })}\n\n`));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        }
       },
     });
 
@@ -1590,6 +1591,7 @@ Transfer is being processed. You will receive confirmation shortly.`;
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
       },
     });
   } catch (error: any) {
