@@ -17,6 +17,8 @@ import {
   consumeUsage,
   DEFAULT_USAGE_LIMIT,
   getUsage,
+  isProActive,
+  PRO_PRICE_RUB,
   type UsageDoc,
 } from '@/lib/humanizer-usage';
 import {
@@ -91,8 +93,14 @@ export default function HumanizerPage() {
   const [requestSuccess, setRequestSuccess] = useState<string | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
 
+  const [proCheckoutBusy, setProCheckoutBusy] = useState(false);
+  const [proCheckoutError, setProCheckoutError] = useState<string | null>(null);
+  const [proPaymentSuccess, setProPaymentSuccess] = useState(false);
+
   const remainingWords = usage?.unlimited ? Infinity : Math.max(0, (usage?.limit ?? DEFAULT_USAGE_LIMIT) - (usage?.used ?? 0));
-  const insufficientLocalUsage = !!analysis && !!usage && !usage.unlimited && analysis.billableWords > remainingWords;
+  const proActive = isProActive(usage);
+  const insufficientLocalUsage =
+    !!analysis && !!usage && !usage.unlimited && !proActive && analysis.billableWords > remainingWords;
   const insufficientCredits =
     !!analysis && typeof credits === 'number' && analysis.billableWords > credits;
   const isBusy = phase !== 'idle' && phase !== 'done' && phase !== 'error';
@@ -226,6 +234,51 @@ export default function HumanizerPage() {
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }, [logs]);
 
+  // Returning from YooKassa: poll the status endpoint until the webhook
+  // marks the order active, then refresh usage so the Pro state shows up.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('payment') !== 'success') return;
+    let orderId: string | null = null;
+    try {
+      orderId = sessionStorage.getItem('hpersona:pendingProOrder');
+    } catch {
+      orderId = null;
+    }
+    if (!orderId) return;
+
+    let cancelled = false;
+    let attempts = 0;
+    const poll = async () => {
+      if (cancelled) return;
+      attempts += 1;
+      try {
+        const r = await fetch(`/api/humanizer/payment/status?orderId=${encodeURIComponent(orderId!)}`);
+        const d = await r.json();
+        if (d?.ok && d.data?.status === 'active') {
+          setProPaymentSuccess(true);
+          try {
+            sessionStorage.removeItem('hpersona:pendingProOrder');
+          } catch {
+            /* ignore */
+          }
+          // Strip ?payment=success from the URL.
+          window.history.replaceState({}, '', window.location.pathname);
+          refreshUsage();
+          return;
+        }
+      } catch {
+        /* keep polling */
+      }
+      if (attempts < 20) setTimeout(poll, 2000);
+    };
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshUsage]);
+
   const start = async () => {
     if (!user) {
       setError('Please sign in to use the humanizer and track your word budget.');
@@ -284,7 +337,7 @@ export default function HumanizerPage() {
         return;
       }
 
-      if (!usage.unlimited && report.billableWords > remainingWords) {
+      if (!usage.unlimited && !proActive && report.billableWords > remainingWords) {
         setError(
           `This job needs ${report.billableWords.toLocaleString()} words but you only have ${remainingWords.toLocaleString()} words available.`
         );
@@ -338,7 +391,7 @@ export default function HumanizerPage() {
       setDownloadUrl(url);
       setDownloadName(filename);
       setPhase('done');
-      if (user && report.billableWords > 0) {
+      if (user && report.billableWords > 0 && !proActive) {
         consumeUsage(user.uid, report.billableWords).catch((err) => {
           console.error('[humanizer] failed to consume usage', err);
         });
@@ -409,6 +462,42 @@ export default function HumanizerPage() {
     setHistory((prev) => prev.filter((h) => h.id !== id));
   };
 
+  const startProCheckout = async () => {
+    if (!user) {
+      setProCheckoutError('Please sign in to upgrade to Pro.');
+      return;
+    }
+    setProCheckoutBusy(true);
+    setProCheckoutError(null);
+    try {
+      const r = await fetch('/api/humanizer/payment/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: user.uid,
+          email: user.email || '',
+          plan: 'monthly_pro',
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d?.ok) {
+        throw new Error(d?.error || `Payment service responded ${r.status}`);
+      }
+      const { confirmationUrl, orderId } = d.data || {};
+      if (!confirmationUrl) throw new Error('Missing confirmation URL.');
+      try {
+        sessionStorage.setItem('hpersona:pendingProOrder', orderId);
+      } catch {
+        /* ignore */
+      }
+      window.location.href = confirmationUrl;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setProCheckoutError(msg);
+      setProCheckoutBusy(false);
+    }
+  };
+
   const progressPct = useMemo(() => {
     if (phase === 'done') return 100;
     if (phase === 'rebuilding') {
@@ -456,6 +545,59 @@ export default function HumanizerPage() {
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-8 space-y-8">
+        {/* Pro upgrade banner — shown until the user has an active Pro
+            subscription. Pro = unlimited humanization for 30 days, 100₽. */}
+        {user && !proActive && (
+          <section className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-white p-5 sm:p-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-emerald-700 font-semibold">
+                  Hpersona Pro
+                </p>
+                <h2 className="mt-1 text-lg sm:text-xl font-semibold text-slate-950">
+                  Unlimited humanization · {PRO_PRICE_RUB}₽ / month
+                </h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Skip the 20,000-word cap. Pay with card, SBP, YooMoney or Mir
+                  via YooKassa. Activates instantly for 30 days.
+                </p>
+              </div>
+              <div className="flex flex-col items-stretch sm:items-end gap-2">
+                <button
+                  type="button"
+                  onClick={startProCheckout}
+                  disabled={proCheckoutBusy}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-700 disabled:opacity-60"
+                >
+                  {proCheckoutBusy ? <Loader2 size={16} className="animate-spin" /> : null}
+                  {proCheckoutBusy ? 'Redirecting…' : `Upgrade to Pro — ${PRO_PRICE_RUB}₽`}
+                </button>
+                {proCheckoutError && (
+                  <p className="text-xs text-rose-600 max-w-xs">{proCheckoutError}</p>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {user && proActive && usage?.proUntil && (
+          <section className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4 flex items-center gap-3">
+            <CheckCircle2 className="text-emerald-600 flex-shrink-0" size={22} />
+            <div className="text-sm">
+              <p className="font-semibold text-emerald-900">Pro active — unlimited humanization</p>
+              <p className="text-xs text-emerald-800/80">
+                Your subscription renews-by date: {new Date(usage.proUntil).toLocaleDateString()}
+              </p>
+            </div>
+          </section>
+        )}
+
+        {proPaymentSuccess && (
+          <section className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4 text-sm text-emerald-900">
+            ✅ Payment received — Pro is now active. Enjoy unlimited humanization for 30 days.
+          </section>
+        )}
+
         {/* Steps 1 & 2 are hidden while a job is running or after it completes,
             so the live progress can take over the screen. They reappear after
             Reset or once the user picks a new file. */}
@@ -582,9 +724,11 @@ export default function HumanizerPage() {
                     <p className="font-semibold">Your local word budget</p>
                     <p className="text-xs text-slate-500">
                       {usage
-                        ? usage.unlimited
-                          ? 'Unlimited access enabled'
-                          : `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} words used`
+                        ? proActive
+                          ? `Pro active — unlimited until ${usage.proUntil ? new Date(usage.proUntil).toLocaleDateString() : '—'}`
+                          : usage.unlimited
+                            ? 'Unlimited access enabled'
+                            : `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} words used`
                         : 'Loading your account usage...'}
                     </p>
                   </div>

@@ -2,6 +2,9 @@
 	"folders": [
 		{
 			"path": "../../.."
+		},
+		{
+			"path": "../../../../ikambavpn-1"
 		}
 	],
 	"settings": {}

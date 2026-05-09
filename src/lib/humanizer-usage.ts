@@ -27,13 +27,24 @@ import {
 import { db } from './firebase';
 
 export const DEFAULT_USAGE_LIMIT = 20_000; // words humanized per user
+export const PRO_PRICE_RUB = 100;
+export const PRO_DURATION_DAYS = 30;
 
 export interface UsageDoc {
   uid: string;
   used: number;
   limit: number;
   unlimited: boolean;
+  /** Pro subscription expiry (ms epoch). Treated as unlimited while > now. */
+  proUntil?: number;
   updatedAt?: unknown;
+}
+
+/** True if the user currently has an active Pro subscription. */
+export function isProActive(usage: UsageDoc | null | undefined): boolean {
+  if (!usage) return false;
+  if (usage.unlimited) return true;
+  return typeof usage.proUntil === 'number' && usage.proUntil > Date.now();
 }
 
 export interface CreditRequest {
@@ -69,6 +80,7 @@ export async function getUsage(uid: string): Promise<UsageDoc> {
     used: typeof d.used === 'number' ? d.used : 0,
     limit: typeof d.limit === 'number' ? d.limit : DEFAULT_USAGE_LIMIT,
     unlimited: !!d.unlimited,
+    proUntil: typeof d.proUntil === 'number' ? d.proUntil : undefined,
   };
 }
 
