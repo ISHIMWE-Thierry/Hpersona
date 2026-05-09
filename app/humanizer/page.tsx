@@ -98,7 +98,17 @@ export default function HumanizerPage() {
   const isBusy = phase !== 'idle' && phase !== 'done' && phase !== 'error';
 
   const missingUsage = !!user && usage === null;
-  const startDisabled = !file || isBusy || insufficientCredits || insufficientLocalUsage || !user || missingUsage;
+  // Block Start while a Reset is required (i.e. after a finished or errored
+  // run) — the user must explicitly Reset before kicking off another job.
+  const startDisabled =
+    !file ||
+    isBusy ||
+    phase === 'done' ||
+    phase === 'error' ||
+    insufficientCredits ||
+    insufficientLocalUsage ||
+    !user ||
+    missingUsage;
 
   const checkCredits = useCallback(async (): Promise<number | null> => {
     try {
