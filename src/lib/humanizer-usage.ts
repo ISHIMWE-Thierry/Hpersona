@@ -141,6 +141,12 @@ export async function createCreditRequest(
     status: 'pending',
     createdAt: serverTimestamp(),
   });
+  // Fire-and-forget admin notification.
+  void fetch('/api/humanizer/notify-request', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestId: ref.id }),
+  }).catch(() => {});
   return ref.id;
 }
 
@@ -183,4 +189,10 @@ export async function decideRequest(
     decidedBy: adminUid,
     decidedAt: serverTimestamp(),
   });
+  // Fire-and-forget user notification.
+  void fetch('/api/humanizer/notify-decision', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestId: id }),
+  }).catch(() => {});
 }

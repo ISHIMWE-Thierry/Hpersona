@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb, isFirebaseAdminConfigured } from '@/lib/firebase-admin';
 import { getPayment } from '@/lib/yookassa';
+import { notifyUserProActivated } from '@/lib/email-service';
 
 export const runtime = 'nodejs';
 
@@ -92,6 +93,32 @@ export async function POST(req: NextRequest) {
         updatedAt: new Date().toISOString(),
       });
       console.log(`[yookassa-webhook] ✅ uid=${uid} pro until ${new Date(proUntil).toISOString()}`);
+
+      // Fire-and-forget Pro activation email.
+      try {
+        const userSnap = await db.collection('users').doc(uid).get();
+        const email =
+          (userSnap.get('email') as string | undefined) ||
+          (order.email as string | undefined) ||
+          '';
+        const displayName =
+          (userSnap.get('displayName') as string | undefined) ||
+          (order.displayName as string | undefined);
+        const amount = typeof order.amount === 'number' ? order.amount : 0;
+        const currency = (order.currency as string) || 'RUB';
+        if (email) {
+          await notifyUserProActivated({
+            email,
+            displayName,
+            proUntil,
+            amount,
+            currency,
+            orderId,
+          });
+        }
+      } catch (mailErr) {
+        console.error('[yookassa-webhook] email failed:', mailErr);
+      }
     } else if (cancelled) {
       await orderRef.update({
         status: 'cancelled',
