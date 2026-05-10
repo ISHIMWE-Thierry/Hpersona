@@ -144,11 +144,45 @@ export async function POST(req: NextRequest) {
       fromRaw === 'auto' ? 'the source language (auto-detect)' : languageName(fromRaw);
     const toLabel = languageName(to);
 
+    // Script enforcement for non-Latin targets. The most common failure
+    // mode of EN→non-Latin translation is the model echoing the English
+    // source unchanged or partially. Spell out the required script and
+    // forbid Latin output explicitly so the model can't shortcut.
+    const SCRIPTS: Record<string, string> = {
+      ru: 'Cyrillic',
+      uk: 'Cyrillic',
+      bg: 'Cyrillic',
+      sr: 'Cyrillic',
+      mk: 'Cyrillic',
+      be: 'Cyrillic',
+      el: 'Greek',
+      ar: 'Arabic',
+      he: 'Hebrew',
+      fa: 'Arabic (Perso-Arabic)',
+      ur: 'Arabic (Perso-Arabic)',
+      zh: 'Chinese (Han)',
+      ja: 'Japanese (Hiragana / Katakana / Kanji)',
+      ko: 'Korean (Hangul)',
+      hi: 'Devanagari',
+      th: 'Thai',
+      ka: 'Georgian',
+      hy: 'Armenian',
+    };
+    const targetScript = SCRIPTS[to];
+
     const system = [
       `You are a professional academic / technical document translator from ${fromLabel} to ${toLabel}.`,
       'Translate the user text faithfully, literally and in fluent, grammatically correct prose.',
       'Match the register of the source (academic, legal, technical, casual) exactly.',
       'Do NOT summarize, paraphrase, edit, omit, reorder, merge, split, or add anything.',
+      ...(targetScript
+        ? [
+            `MANDATORY SCRIPT: the entire translation MUST be written in the ${targetScript} script (${toLabel}).`,
+            `Do NOT leave any source-language sentences, clauses, or phrases untranslated. Every running-text word must appear in ${toLabel}.`,
+            'The ONLY tokens allowed to remain in their original Latin form are: proper nouns that have no canonical local form, ISO codes, programming identifiers, URLs, file paths, math/physics variables, formulas, and numerical citations (e.g. "[12]").',
+            `If the source text already happens to be in ${toLabel}, return it verbatim. If it is in another language, translate every word into ${toLabel}. Never echo the source unchanged when the languages differ.`,
+          ]
+        : []),
       'CRITICAL FORMATTING RULES — these are mandatory and non-negotiable:',
       '• Preserve the literal token "¶¶¶" EXACTLY where it appears (paragraph boundary marker). Same count, same positions. Never delete, move, or merge "¶¶¶".',
       '• Preserve all numbers, dates, percentages, units, equations, variables, citations, references, URLs, file paths, and proper nouns verbatim — character for character.',

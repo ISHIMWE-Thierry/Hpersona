@@ -1147,13 +1147,28 @@ export async function humanizeDocxFile(
           if (nonLatinTargets.has(docLang)) {
             const originalLeak = latinLeakRatio(section.text);
             const resultLeak = latinLeakRatio(backTranslated);
-            // Allow a margin: original may legitimately have some Latin
-            // (formulas, citations, names). Only flag if the result is
-            // significantly more Latin-heavy than the source.
-            if (resultLeak > originalLeak + 0.15 && resultLeak > 0.25) {
+            // Echo detector: model returned the English text unchanged
+            // (or nearly so). Compare normalized strings.
+            const norm = (s: string) =>
+              s.replace(/¶¶¶/g, ' ').replace(/\s+/g, ' ').trim();
+            const echo =
+              norm(backTranslated).length > 0 &&
+              norm(backTranslated) === norm(humanizedEn);
+            // Strict thresholds. For a doc that's e.g. 95% Cyrillic, the
+            // back-translation must also be ≥95% Cyrillic. Anything more
+            // than +10% Latin OR an absolute ratio above 15% is a leak.
+            const isLeak =
+              echo ||
+              resultLeak > originalLeak + 0.1 ||
+              resultLeak > 0.15;
+            if (isLeak) {
               onProgress({
                 phase: 'translating',
-                message: `Section ${processed}/${meaningful.length}: detected English leak (${Math.round(resultLeak * 100)}%), retrying back-translation…`,
+                message: echo
+                  ? `Section ${processed}/${meaningful.length}: translator echoed English — retrying with stronger model…`
+                  : `Section ${processed}/${meaningful.length}: detected English leak (${Math.round(
+                      resultLeak * 100
+                    )}%), retrying back-translation…`,
                 current: processed,
                 total: meaningful.length,
                 language: docLang,
@@ -1161,11 +1176,18 @@ export async function humanizeDocxFile(
               });
               try {
                 const retry = await translateText(humanizedEn, 'en', docLang, signal, 'high');
-                if (latinLeakRatio(retry) <= originalLeak + 0.15) {
+                const retryLeak = latinLeakRatio(retry);
+                const retryEcho = norm(retry) === norm(humanizedEn);
+                if (
+                  !retryEcho &&
+                  retryLeak <= originalLeak + 0.1 &&
+                  retryLeak <= 0.15
+                ) {
                   backTranslated = retry;
                 } else {
                   // Still leaking — keep the original text for this section
-                  // (formatting preserved, words unchanged).
+                  // (formatting preserved, words unchanged). Better the
+                  // user's verbatim text than English in their thesis.
                   onProgress({
                     phase: 'translating',
                     message: `Section ${processed}/${meaningful.length}: back-translation still leaking English — kept original text.`,
@@ -1250,6 +1272,32 @@ export async function humanizeDocxFile(
     }
 
     consumedEstimate += nextEstimate;
+    // Final paranoid guard: never paste English into a non-Latin-script
+    // document, regardless of which path produced `humanized`. If the result
+    // is significantly more Latin-heavy than the source paragraph, fall back
+    // to the original text. This catches any logic gap in the round-trip.
+    const nonLatinDocLangs = new Set([
+      'ru', 'uk', 'bg', 'sr', 'mk', 'be',
+      'el', 'ar', 'he', 'fa', 'ur',
+      'zh', 'ja', 'ko', 'hi', 'th', 'ka', 'hy',
+    ]);
+    if (nonLatinDocLangs.has(docLang)) {
+      const srcLeak = latinLeakRatio(section.text);
+      const outLeak = latinLeakRatio(humanized);
+      if (outLeak > srcLeak + 0.1 || outLeak > 0.15) {
+        onProgress({
+          phase: 'humanizing',
+          message: `Section ${processed}/${meaningful.length}: final guard caught English leak (${Math.round(
+            outLeak * 100
+          )}%) — keeping original text.`,
+          current: processed,
+          total: meaningful.length,
+          language: docLang,
+          warning: true,
+        });
+        humanized = section.text;
+      }
+    }
     // Strip any straggler sentinels from the model output before distributing.
     const cleaned = humanized.replace(/¶¶¶/g, '').replace(/\n{3,}/g, '\n\n');
     const perParagraph = distributeAcrossParagraphs(section.paragraphs, humanized);
