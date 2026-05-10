@@ -327,6 +327,53 @@ function classifyParagraph(p: Element): { humanizable: boolean; reason?: string 
     return { humanizable: false, reason: 'formula/text-math' };
   }
 
+  // Glossary / legend / definition bullets. Lines that start with a bullet
+  // marker (•, –, —, ·, *, ▪, ⁃) AND contain an em-dash / en-dash / colon
+  // shortly after are variable-definitions like "• a(t) — масштабный
+  // коэффициент…". These are tied to formulas and must NOT be rewritten —
+  // changing the wording desyncs them from the equation they explain.
+  if (rawText && /^\s*[•·\u2022\u25AA\u2043*\-\u2013\u2014]\s+/.test(rawText)) {
+    // Confirm it's a definition (label + dash/colon + explanation), not a
+    // generic bulleted prose paragraph that happens to start with "•".
+    if (/^\s*[•·\u2022\u25AA\u2043*\-\u2013\u2014]\s+\S{1,40}\s*[\u2013\u2014\-:]\s+/.test(rawText)) {
+      return { humanizable: false, reason: 'glossary/definition' };
+    }
+  }
+
+  // Bibliography / reference entry. Patterns:
+  //   "[1] Author, A. (2024). Title…"   "1. Smith J., Doe A. — 2023. — …"
+  //   "Иванов И.И. // Журнал. — 2024. — № 3. — С. 12—34."
+  // Combined heuristics: numeric-prefix bracket OR an academic citation
+  // separator "//" OR a bare 4-digit year + dash format.
+  if (rawText) {
+    if (/^\s*\[\s*\d+\s*\]\s*\S/.test(rawText)) {
+      return { humanizable: false, reason: 'reference' };
+    }
+    // Russian bibliography: contains the "//" separator AND a 4-digit year
+    if (/\s\/\/\s/.test(rawText) && /\b(19|20)\d{2}\b/.test(rawText)) {
+      return { humanizable: false, reason: 'reference' };
+    }
+  }
+
+  // Standalone short fragments: parenthesised equation labels "(7.9)", lone
+  // labels "где:", "Доказательство.", "Примечание." etc. Drop anything
+  // shorter than 25 words AND that doesn't end with sentence-final
+  // punctuation followed by a real ending — these are headings-in-disguise,
+  // figure captions, equation tags, or section intro stubs, never running
+  // prose worth humanizing.
+  const wc = countWords(rawText);
+  if (wc > 0 && wc < 25) {
+    // Allow ONLY if it ends with a real sentence punctuation AND has at
+    // least 2 sentences worth of structure (a comma + ending, or the like).
+    // The vast majority of <25-word paragraphs in a thesis are scaffolding.
+    const endsAsSentence = /[.!?»"”']$/.test(rawText);
+    const looksLikeProse =
+      endsAsSentence && /[,;]/.test(rawText) && wc >= 12;
+    if (!looksLikeProse) {
+      return { humanizable: false, reason: 'short-fragment' };
+    }
+  }
+
   return { humanizable: true };
 }
 
@@ -1590,5 +1637,104 @@ export async function previewDocxFile(
     sections: sections.length,
     effectiveWordsPerChunk,
   };
+}
+
+/**
+ * One section's AI-detection result for the preview re-check flow.
+ */
+export interface SectionAiResult {
+  sectionIndex: number;
+  /** Paragraph indices that belong to this section (humanizable ones only). */
+  paragraphIndices: number[];
+  /** Words in the section. */
+  wordCount: number;
+  /** AI score 0-100 (Undetectable.AI). null = detection failed / skipped. */
+  aiScore: number | null;
+  /** True when score < threshold → already human, no need to humanize. */
+  alreadyHuman: boolean;
+}
+
+/** Progress callback fired for each section as detection finishes. */
+export type AiRecheckProgress = (info: {
+  done: number;
+  total: number;
+  current?: SectionAiResult;
+}) => void;
+
+/**
+ * Run AI-detection on every humanizable section in the document and report
+ * which ones come back as "already human" (score < 50). Used by the preview
+ * UI to de-select human-written sections BEFORE the user spends credits
+ * humanizing them.
+ *
+ * The detector requires ≥200 words for accurate scoring. Sections smaller
+ * than that are reported with `aiScore: null` and `alreadyHuman: false`
+ * (we can't tell, so we keep them eligible and let the runtime pipeline
+ * make the same call again with retries).
+ */
+export async function detectAiOnPreview(
+  file: File,
+  targetWordsPerChunk: number = 0,
+  onProgress?: AiRecheckProgress,
+  signal?: AbortSignal
+): Promise<SectionAiResult[]> {
+  const buf = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
+  const docXmlFile = zip.file('word/document.xml');
+  if (!docXmlFile) throw new Error('Invalid .docx (missing word/document.xml)');
+  const xmlString = await docXmlFile.async('string');
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlString, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length > 0) {
+    throw new Error('Failed to parse document.xml');
+  }
+  const paragraphs = extractParagraphs(doc);
+  const effective =
+    targetWordsPerChunk && targetWordsPerChunk > 0
+      ? targetWordsPerChunk
+      : recommendChunkSize(paragraphs);
+  const sections = buildSections(paragraphs, effective);
+
+  // Filter to only sections that contain humanizable content of meaningful
+  // size (≥50 chars to even be eligible for the humanizer pipeline).
+  const candidates = sections
+    .map((s, i) => ({ s, i }))
+    .filter(
+      ({ s }) => s.wordCount > 0 && s.text.trim().length >= MIN_HUMANIZE_CHARS
+    );
+
+  const results: SectionAiResult[] = [];
+  let done = 0;
+  for (const { s, i } of candidates) {
+    if (signal?.aborted) throw new Error('Aborted');
+    const paragraphIndices = s.paragraphs
+      .filter((p) => p.humanizable)
+      .map((p) => p.paragraphIndex);
+    // The detector needs ≥200 words to produce a reliable score. Skip
+    // detection for tiny sections — they stay eligible.
+    let aiScore: number | null = null;
+    if (s.wordCount >= 200) {
+      try {
+        // Strip the paragraph sentinel before sending to the detector.
+        const cleanText = s.text.replace(/¶¶¶/g, ' ');
+        aiScore = await detectAiScore(cleanText, signal);
+      } catch (err) {
+        if (err instanceof Error && err.message === 'Aborted') throw err;
+        aiScore = null;
+      }
+    }
+    const alreadyHuman = aiScore !== null && aiScore < AI_DETECTION_THRESHOLD;
+    const result: SectionAiResult = {
+      sectionIndex: i,
+      paragraphIndices,
+      wordCount: s.wordCount,
+      aiScore,
+      alreadyHuman,
+    };
+    results.push(result);
+    done += 1;
+    onProgress?.({ done, total: candidates.length, current: result });
+  }
+  return results;
 }
 

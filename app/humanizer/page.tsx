@@ -7,11 +7,13 @@ import {
   humanizeDocxFile,
   analyzeDocxFile,
   previewDocxFile,
+  detectAiOnPreview,
   CREDIT_SAFETY_MULTIPLIER,
   type ProgressUpdate,
   type HumanizeOptions,
   type DocxAnalysis,
   type PreviewReport,
+  type SectionAiResult,
 } from '@/lib/docx-humanizer';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -76,6 +78,13 @@ export default function HumanizerPage() {
   const [analysis, setAnalysis] = useState<DocxAnalysis | null>(null);
   const [preview, setPreview] = useState<PreviewReport | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  // AI re-check state — populated when the user clicks "Re-check with AI".
+  // Once set, paragraphs whose section is `alreadyHuman` are dropped from
+  // the humanization plan and the credit estimate updates accordingly.
+  const [aiResults, setAiResults] = useState<SectionAiResult[] | null>(null);
+  const [aiChecking, setAiChecking] = useState(false);
+  const [aiProgress, setAiProgress] = useState({ done: 0, total: 0 });
+  const aiAbortRef = useRef<AbortController | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const progressSectionRef = useRef<HTMLDivElement | null>(null);
   const liveLogRef = useRef<HTMLDivElement | null>(null);
@@ -107,10 +116,48 @@ export default function HumanizerPage() {
 
   const remainingWords = usage?.unlimited ? Infinity : Math.max(0, (usage?.limit ?? DEFAULT_USAGE_LIMIT) - (usage?.used ?? 0));
   const proActive = isProActive(usage);
+
+  // When AI re-check has run, derive (1) the set of paragraph indices that
+  // were classified as already-human and (2) a recomputed credit estimate
+  // covering only the sections that still need humanizing. Memoised to
+  // keep the preview render cheap even on big docs.
+  const aiAdjusted = useMemo(() => {
+    if (!preview || !aiResults) return null;
+    const humanParaIdx = new Set<number>();
+    let humanizeWords = 0;
+    let humanizeSections = 0;
+    let humanWords = 0;
+    let humanSections = 0;
+    for (const r of aiResults) {
+      if (r.alreadyHuman) {
+        humanSections += 1;
+        humanWords += r.wordCount;
+        for (const idx of r.paragraphIndices) humanParaIdx.add(idx);
+      } else {
+        humanizeSections += 1;
+        humanizeWords += r.wordCount;
+      }
+    }
+    const billableWords = Math.ceil(humanizeWords * CREDIT_SAFETY_MULTIPLIER);
+    return {
+      humanParaIdx,
+      humanizeWords,
+      humanizeSections,
+      humanWords,
+      humanSections,
+      billableWords,
+    };
+  }, [preview, aiResults]);
+
+  // Effective billable words for credit gating — adjusted by AI re-check
+  // when it has run, otherwise the raw analyzer estimate.
+  const effectiveBillableWords =
+    aiAdjusted?.billableWords ?? analysis?.billableWords ?? 0;
+
   const insufficientLocalUsage =
-    !!analysis && !!usage && !usage.unlimited && !proActive && analysis.billableWords > remainingWords;
+    !!analysis && !!usage && !usage.unlimited && !proActive && effectiveBillableWords > remainingWords;
   const insufficientCredits =
-    !!analysis && typeof credits === 'number' && analysis.billableWords > credits;
+    !!analysis && typeof credits === 'number' && effectiveBillableWords > credits;
   const isBusy = phase !== 'idle' && phase !== 'done' && phase !== 'error';
 
   const missingUsage = !!user && usage === null;
@@ -168,6 +215,8 @@ export default function HumanizerPage() {
     setAnalysis(null);
     setPreview(null);
     setShowPreview(false);
+    setAiResults(null);
+    setAiProgress({ done: 0, total: 0 });
     setPhase('idle');
     // New file → re-enable auto chunk-size recommendation.
     setChunkWordsTouched(false);
@@ -209,6 +258,9 @@ export default function HumanizerPage() {
       .then((pv) => {
         if (cancelled || !pv) return;
         setPreview(pv);
+        // Section boundaries changed → previous AI scores no longer line up.
+        setAiResults(null);
+        setAiProgress({ done: 0, total: 0 });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -465,6 +517,45 @@ export default function HumanizerPage() {
     setError('Cancelled by user.');
   };
 
+  const runAiRecheck = useCallback(async () => {
+    if (!file || aiChecking) return;
+    const ac = new AbortController();
+    aiAbortRef.current = ac;
+    setAiChecking(true);
+    setAiResults([]);
+    setAiProgress({ done: 0, total: 0 });
+    try {
+      const effective =
+        chunkWordsTouched && chunkWords > 0
+          ? chunkWords
+          : analysis?.recommendedWordsPerChunk ?? 0;
+      const all = await detectAiOnPreview(
+        file,
+        effective,
+        ({ done, total, current }) => {
+          setAiProgress({ done, total });
+          if (current) {
+            setAiResults((prev) => (prev ? [...prev, current] : [current]));
+          }
+        },
+        ac.signal
+      );
+      setAiResults(all);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg !== 'Aborted') {
+        setError(`AI re-check failed: ${msg}`);
+      }
+    } finally {
+      setAiChecking(false);
+      aiAbortRef.current = null;
+    }
+  }, [file, aiChecking, chunkWordsTouched, chunkWords, analysis]);
+
+  const cancelAiRecheck = () => {
+    aiAbortRef.current?.abort();
+  };
+
   const reset = () => {
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     setFile(null);
@@ -477,6 +568,8 @@ export default function HumanizerPage() {
     setAnalysis(null);
     setPreview(null);
     setShowPreview(false);
+    setAiResults(null);
+    setAiProgress({ done: 0, total: 0 });
     setPhase('idle');
   };
 
@@ -813,28 +906,72 @@ export default function HumanizerPage() {
                   >
                     {showPreview ? 'Hide preview' : 'Preview which paragraphs will be humanized'}
                     <span className="text-slate-500 font-normal">
-                      ({preview.paragraphs.filter((p) => p.humanizable && !p.tooShort).length}{' '}
+                      ({preview.paragraphs.filter((p) => p.humanizable && !p.tooShort && !aiAdjusted?.humanParaIdx.has(p.index)).length}{' '}
                       will humanize ·{' '}
-                      {preview.paragraphs.filter((p) => !p.humanizable || p.tooShort).length}{' '}
+                      {preview.paragraphs.filter((p) => !p.humanizable || p.tooShort || aiAdjusted?.humanParaIdx.has(p.index)).length}{' '}
                       verbatim)
                     </span>
                   </button>
                   {showPreview && (
                     <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
-                      <div className="mb-2 flex flex-wrap gap-3 text-[11px] text-slate-600">
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className="inline-block h-3 w-3 rounded-sm bg-emerald-200 border border-emerald-300" />
-                          Will humanize
-                        </span>
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className="inline-block h-3 w-3 rounded-sm bg-amber-100 border border-amber-300" />
-                          Too short — kept as original
-                        </span>
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className="inline-block h-3 w-3 rounded-sm bg-slate-100 border border-slate-300" />
-                          Preserved verbatim (table / image / formula / heading / link)
-                        </span>
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap gap-3 text-[11px] text-slate-600">
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="inline-block h-3 w-3 rounded-sm bg-emerald-200 border border-emerald-300" />
+                            Will humanize
+                          </span>
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="inline-block h-3 w-3 rounded-sm bg-sky-100 border border-sky-300" />
+                            Already human (AI&nbsp;&lt;&nbsp;50)
+                          </span>
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="inline-block h-3 w-3 rounded-sm bg-amber-100 border border-amber-300" />
+                            Too short
+                          </span>
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="inline-block h-3 w-3 rounded-sm bg-slate-100 border border-slate-300" />
+                            Preserved verbatim
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {aiChecking ? (
+                            <>
+                              <span className="text-[11px] text-slate-600">
+                                AI re-check: {aiProgress.done}/{aiProgress.total} sections
+                              </span>
+                              <button
+                                type="button"
+                                onClick={cancelAiRecheck}
+                                className="rounded-lg border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={runAiRecheck}
+                              disabled={isBusy || !file}
+                              className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+                              title="Run AI detection on every section. Sections that are already human (score < 50) are removed from the humanization plan."
+                            >
+                              {aiResults && aiResults.length > 0 ? 'Re-run AI check' : 'Re-check with AI'}
+                            </button>
+                          )}
+                        </div>
                       </div>
+                      {aiAdjusted && (
+                        <div className="mb-3 rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-xs text-sky-900">
+                          AI re-check found{' '}
+                          <span className="font-semibold">
+                            {aiAdjusted.humanSections} section(s) ({aiAdjusted.humanWords.toLocaleString()} words)
+                          </span>{' '}
+                          that are already human-written — they will be kept verbatim and won&rsquo;t cost credits. Updated estimate:{' '}
+                          <span className="font-semibold">
+                            {aiAdjusted.humanizeWords.toLocaleString()} words to humanize · {aiAdjusted.billableWords.toLocaleString()} credits.
+                          </span>
+                        </div>
+                      )}
                       <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2 space-y-1.5 font-serif text-[13px] leading-relaxed">
                         {preview.paragraphs.map((p) => {
                           if (!p.text.trim()) {
@@ -842,6 +979,10 @@ export default function HumanizerPage() {
                             // structure is still visible without taking room.
                             return <div key={p.index} className="h-1" />;
                           }
+                          const isAlreadyHuman =
+                            p.humanizable &&
+                            !p.tooShort &&
+                            !!aiAdjusted?.humanParaIdx.has(p.index);
                           let cls =
                             'rounded px-2 py-1 text-slate-900 bg-emerald-100/80 border border-emerald-200';
                           let badge: string | null = null;
@@ -853,6 +994,16 @@ export default function HumanizerPage() {
                             cls =
                               'rounded px-2 py-1 text-slate-700 bg-amber-50 border border-amber-200';
                             badge = 'too short';
+                          } else if (isAlreadyHuman) {
+                            const score = aiResults?.find((r) =>
+                              r.paragraphIndices.includes(p.index)
+                            )?.aiScore;
+                            cls =
+                              'rounded px-2 py-1 text-slate-700 bg-sky-50 border border-sky-200';
+                            badge =
+                              score !== null && score !== undefined
+                                ? `human · AI ${Math.round(score)}`
+                                : 'already human';
                           }
                           // Truncate very long paragraphs for the preview only.
                           const display =
@@ -877,7 +1028,9 @@ export default function HumanizerPage() {
                       <p className="mt-2 text-[11px] text-slate-500">
                         Highlighted (green) paragraphs will be sent to the humanizer in{' '}
                         {preview.sections} section(s) of ~{preview.effectiveWordsPerChunk} words each.
-                        Everything else is reproduced exactly as written.
+                        Everything else is reproduced exactly as written. The AI re-check is optional
+                        — running it costs detection credits (~0.1 per word) and may take a few minutes
+                        on large documents.
                       </p>
                     </div>
                   )}
