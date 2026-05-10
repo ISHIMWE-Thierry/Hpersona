@@ -94,6 +94,11 @@ export default function HumanizerPage() {
   const [purpose, setPurpose] = useState('General Writing');
   const [strength, setStrength] = useState('Balanced');
   const [model, setModel] = useState('v11');
+  // When false, the runtime AI pre-pass is disabled and EVERY section gets
+  // humanized — the user is opting to push the doc closer to 0% AI even at
+  // the cost of more credits and rewriting their own prose. Default true:
+  // skip already-human sections to save credits + preserve the user's voice.
+  const [skipHumanSections, setSkipHumanSections] = useState(true);
   // 0 = auto (recommended size determined from document analysis).
   const [chunkWords, setChunkWords] = useState(0);
   // Tracks whether the user has manually overridden the chunk size.
@@ -413,6 +418,7 @@ export default function HumanizerPage() {
       strength,
       model,
       targetWordsPerChunk: effectiveChunk,
+      skipHumanSections,
     };
 
     try {
@@ -854,6 +860,31 @@ export default function HumanizerPage() {
               </p>
             </div>
           </div>
+
+          <label
+            className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs cursor-pointer ${
+              skipHumanSections
+                ? 'border-slate-200 bg-slate-50 text-slate-700'
+                : 'border-amber-300 bg-amber-50 text-amber-900'
+            } ${isBusy ? 'opacity-60 cursor-not-allowed' : ''}`}
+          >
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={!skipHumanSections}
+              disabled={isBusy}
+              onChange={(e) => setSkipHumanSections(!e.target.checked)}
+            />
+            <span>
+              <span className="font-semibold">Humanize every section (force 0% AI)</span>
+              <br />
+              <span className="text-[11px] opacity-80">
+                {skipHumanSections
+                  ? 'Currently OFF — sections that score below the AI threshold are kept verbatim to save credits and preserve your own voice. Recommended for most documents.'
+                  : 'Currently ON — the AI pre-check is bypassed and every section is rewritten. Costs more credits and may rephrase your already-human paragraphs, but pushes the document closer to 0% AI overall.'}
+              </span>
+            </span>
+          </label>
 
           {analyzing && !analysis && (
             <div className="text-xs text-slate-600 flex items-center gap-2">
