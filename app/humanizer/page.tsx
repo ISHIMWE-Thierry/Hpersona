@@ -78,9 +78,9 @@ export default function HumanizerPage() {
   const [history, setHistory] = useState<HumanizedHistoryMeta[]>([]);
 
   const [readability, setReadability] = useState('University');
-  const [purpose, setPurpose] = useState('Article');
-  const [strength, setStrength] = useState('More Human');
-  const [model, setModel] = useState('v2');
+  const [purpose, setPurpose] = useState('General Writing');
+  const [strength, setStrength] = useState('Balanced');
+  const [model, setModel] = useState('v11');
   const [chunkWords, setChunkWords] = useState(300);
 
   const { user } = useAuth();
@@ -670,12 +670,12 @@ export default function HumanizerPage() {
               </label>
               <input
                 type="number"
-                min={50}
+                min={300}
                 max={1000}
                 step={50}
                 value={chunkWords}
                 disabled={isBusy}
-                onChange={(e) => setChunkWords(Math.max(50, Number(e.target.value) || 300))}
+                onChange={(e) => setChunkWords(Math.max(300, Number(e.target.value) || 300))}
                 className="mt-1 w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 focus:outline-none focus:border-slate-900 disabled:opacity-50"
               />
             </div>
@@ -889,6 +889,7 @@ export default function HumanizerPage() {
                     {phase === 'parsing' && 'Reading document…'}
                     {phase === 'chunking' && 'Splitting into sections…'}
                     {phase === 'analyzing' && 'Analyzing document…'}
+                    {phase === 'detecting-ai' && `Checking AI ${current}/${total}`}
                     {phase === 'detecting-language' && 'Detecting language…'}
                     {phase === 'translating' && `Translating ${current}/${total}`}
                     {phase === 'humanizing' && `Humanizing ${current}/${total}`}

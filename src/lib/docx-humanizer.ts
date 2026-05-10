@@ -43,6 +43,26 @@ const PARAGRAPH_SENTINEL = '\n¶¶¶\n';
 const MAX_SECTION_RETRIES = 4;
 const RETRY_BASE_DELAY_MS = 2500;
 
+/**
+ * Minimum section size that gets humanized. Below this we keep the original
+ * text. Two reasons:
+ *   1. The humanizer is unreliable on tiny inputs (it pads / paraphrases
+ *      single sentences in unhelpful ways and frequently rejects sub-50-char
+ *      payloads outright).
+ *   2. The AI detector requires ≥200 words for accurate scoring; sections
+ *      below 300 words are too short to reliably classify either way.
+ * Sections under this threshold are left as the user wrote them.
+ */
+const MIN_HUMANIZE_WORDS = 300;
+
+/**
+ * AI-detection threshold (per Undetectable.AI docs):
+ *   < 50 → definitely human   (skip humanization)
+ *   50–60 → possibly AI       (humanize)
+ *   > 60 → definitely AI      (humanize)
+ */
+const AI_DETECTION_THRESHOLD = 50;
+
 export interface HumanizeOptions {
   readability: string;
   purpose: string;
@@ -50,6 +70,13 @@ export interface HumanizeOptions {
   model: string;
   // Target words per chunk sent to humanizer. The API requires >= 50 chars.
   targetWordsPerChunk: number;
+  /**
+   * If true, run AI detection on every humanizable section in its original
+   * language before translating/humanizing. Sections that score below
+   * `AI_DETECTION_THRESHOLD` (definitely human) are kept verbatim. Saves
+   * credits + preserves the user's own voice. Defaults to true.
+   */
+  skipHumanSections?: boolean;
 }
 
 export interface ProgressUpdate {
@@ -57,6 +84,7 @@ export interface ProgressUpdate {
     | 'parsing'
     | 'chunking'
     | 'analyzing'
+    | 'detecting-ai'
     | 'detecting-language'
     | 'translating'
     | 'humanizing'
@@ -77,6 +105,8 @@ export interface ProgressUpdate {
   language?: string;
   /** Pre-flight document analysis. Shown to the user before humanizing starts. */
   analysis?: DocumentAnalysis;
+  /** AI detection score (0-100) for the current section, when applicable. */
+  aiScore?: number;
 }
 
 /** Pre-flight analysis of the uploaded .docx — surfaced to the user as a recommendation. */
@@ -647,6 +677,64 @@ async function detectLanguage(sample: string, signal?: AbortSignal): Promise<str
   }
 }
 
+// ── AI detection (Undetectable.AI xlm_ud_detector) ───────────────────────────
+//
+// Runs on the section's ORIGINAL-LANGUAGE text (Russian, English, etc.) so
+// translation artefacts don't pollute the score. Returns a score 0-100 where
+// higher = more likely AI. Returns null on any failure (caller should treat
+// "unknown" as "humanize anyway" to be safe).
+
+interface DetectQueryResult {
+  status?: 'pending' | 'done' | 'failed';
+  result?: number | null;
+  error?: string;
+  id?: string;
+}
+
+async function detectAiScore(
+  text: string,
+  signal?: AbortSignal
+): Promise<number | null> {
+  try {
+    // Submit
+    const submitRes = await fetch('/api/humanizer/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      body: JSON.stringify({ mode: 'submit', text }),
+    });
+    if (!submitRes.ok) return null;
+    const submit = (await submitRes.json().catch(() => ({}))) as { id?: string };
+    const id = submit?.id;
+    if (!id) return null;
+
+    // Poll. Average detection takes 2-4s; we cap at ~30s.
+    const maxAttempts = 20;
+    for (let i = 0; i < maxAttempts; i += 1) {
+      if (signal?.aborted) throw new Error('Aborted');
+      // Backoff: 1s, 1.5s, 2s, then 2s steady.
+      const wait = i < 2 ? 1000 : i < 4 ? 1500 : 2000;
+      await new Promise((r) => setTimeout(r, wait));
+      const queryRes = await fetch('/api/humanizer/detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal,
+        body: JSON.stringify({ mode: 'query', id }),
+      });
+      if (!queryRes.ok) continue;
+      const data = (await queryRes.json().catch(() => ({}))) as DetectQueryResult;
+      if (data?.status === 'done' && typeof data.result === 'number') {
+        return data.result;
+      }
+      if (data?.status === 'failed') return null;
+    }
+    return null;
+  } catch (err) {
+    if (err instanceof Error && err.message === 'Aborted') throw err;
+    return null;
+  }
+}
+
 async function translateText(
   text: string,
   from: string,
@@ -836,10 +924,22 @@ export async function humanizeDocxFile(
   onProgress({ phase: 'chunking', message: 'Splitting into sections…' });
   const paragraphs = extractParagraphs(doc);
   const sections = buildSections(paragraphs, options.targetWordsPerChunk);
-  const meaningful = sections.filter((s) => s.wordCount > 0 && s.text.trim().length >= 50);
+  // Sections must hit MIN_HUMANIZE_WORDS (300) to be eligible for humanization.
+  // Smaller sections are kept verbatim — too short for the humanizer to
+  // produce meaningful output and below the AI-detector accuracy threshold.
+  const meaningful = sections.filter(
+    (s) => s.wordCount >= MIN_HUMANIZE_WORDS && s.text.trim().length >= 50
+  );
+  const undersizedCount = sections.filter(
+    (s) => s.wordCount > 0 && s.wordCount < MIN_HUMANIZE_WORDS
+  ).length;
   onProgress({
     phase: 'chunking',
-    message: `Found ${paragraphs.length} paragraphs in ${sections.length} sections (${meaningful.length} to humanize).`,
+    message:
+      `Found ${paragraphs.length} paragraphs in ${sections.length} sections ` +
+      `(${meaningful.length} ≥${MIN_HUMANIZE_WORDS} words to humanize` +
+      (undersizedCount > 0 ? `, ${undersizedCount} kept as original` : '') +
+      `).`,
     total: meaningful.length,
     current: 0,
   });
@@ -885,10 +985,16 @@ export async function humanizeDocxFile(
   let processed = 0;
   let consumedEstimate = 0;
   let skippedSections = 0;
+  let humanWrittenSkips = 0;
+  const skipHumanSections = options.skipHumanSections !== false; // default true
   for (const section of sections) {
     if (signal?.aborted) throw new Error('Aborted');
-    if (section.wordCount === 0 || section.text.trim().length < 50) {
-      // too short to humanize; leave as-is
+    if (
+      section.wordCount < MIN_HUMANIZE_WORDS ||
+      section.text.trim().length < 50
+    ) {
+      // Below 300-word minimum (or empty/non-humanizable pass-through) — keep
+      // original. No API call, no credits consumed.
       continue;
     }
     processed += 1;
@@ -906,6 +1012,45 @@ export async function humanizeDocxFile(
         );
       }
     }
+
+    // ── AI detection pre-pass ────────────────────────────────────────────
+    // Run on the ORIGINAL-LANGUAGE text (before any translation) so the
+    // detector sees the user's actual writing, not a translation artefact.
+    // If the score is below the threshold the section is "definitely human"
+    // — we skip humanization and keep the original prose intact.
+    if (skipHumanSections) {
+      onProgress({
+        phase: 'detecting-ai',
+        message: `Checking section ${processed}/${meaningful.length} for AI…`,
+        current: processed,
+        total: meaningful.length,
+      });
+      const score = await detectAiScore(section.text, signal);
+      if (score !== null && score < AI_DETECTION_THRESHOLD) {
+        humanWrittenSkips += 1;
+        onProgress({
+          phase: 'detecting-ai',
+          message:
+            `Section ${processed}/${meaningful.length} scored ${score.toFixed(0)}/100 ` +
+            `— already human-written, kept as original.`,
+          current: processed,
+          total: meaningful.length,
+          aiScore: score,
+        });
+        continue; // skip humanization entirely
+      }
+      if (score !== null) {
+        onProgress({
+          phase: 'detecting-ai',
+          message:
+            `Section ${processed}/${meaningful.length} scored ${score.toFixed(0)}/100 — humanizing.`,
+          current: processed,
+          total: meaningful.length,
+          aiScore: score,
+        });
+      }
+    }
+
     onProgress({
       phase: 'humanizing',
       message: `Humanizing section ${processed} of ${meaningful.length}…`,
@@ -1126,11 +1271,20 @@ export async function humanizeDocxFile(
 
   const baseName = file.name.replace(/\.docx$/i, '');
   const outName = `${baseName}-humanized.docx`;
+  const parts: string[] = ['Ready to download.'];
+  if (humanWrittenSkips > 0) {
+    parts.push(
+      `${humanWrittenSkips} section(s) were already human-written and were preserved as-is.`
+    );
+  }
+  if (skippedSections > 0) {
+    parts.push(
+      `${skippedSections} section(s) couldn't be humanized after retries and were left as the original text.`
+    );
+  }
   onProgress({
     phase: 'done',
-    message: skippedSections
-      ? `Ready to download. ${skippedSections} section(s) couldn't be humanized after retries and were left as the original text.`
-      : 'Ready to download.',
+    message: parts.join(' '),
     skippedSections,
   });
   return { blob: outBlob, filename: outName };
