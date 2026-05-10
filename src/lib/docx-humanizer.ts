@@ -1443,3 +1443,87 @@ export async function analyzeDocxFile(
     preservedParagraphs,
   };
 }
+
+/**
+ * One paragraph entry as shown in the pre-flight preview. Lets the user see
+ * exactly which paragraphs will be highlighted for humanization vs. preserved
+ * verbatim, and why.
+ */
+export interface PreviewParagraph {
+  /** Zero-based paragraph index in document order. */
+  index: number;
+  text: string;
+  wordCount: number;
+  /** True = will be humanized. False = passed through verbatim. */
+  humanizable: boolean;
+  /** Why we're skipping it (table / picture / formula / heading / hyperlink / field). */
+  skipReason?: string;
+  /** Index of the section this paragraph belongs to (only meaningful when humanizable). */
+  sectionIndex: number;
+  /** True if the section this paragraph belongs to is too short for the API (<50 chars). */
+  tooShort: boolean;
+}
+
+export interface PreviewReport {
+  paragraphs: PreviewParagraph[];
+  sections: number;
+  effectiveWordsPerChunk: number;
+}
+
+/**
+ * Build a per-paragraph preview of the upcoming run. Used by the UI to
+ * highlight pure-text paragraphs (will be humanized) vs. preserved ones
+ * (tables, pictures, formulas, headings, hyperlinks, fields, math).
+ *
+ * Pass `targetWordsPerChunk = 0` to use the auto-recommended chunk size.
+ */
+export async function previewDocxFile(
+  file: File,
+  targetWordsPerChunk: number = 0
+): Promise<PreviewReport> {
+  const buf = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
+  const docXmlFile = zip.file('word/document.xml');
+  if (!docXmlFile) throw new Error('Invalid .docx (missing word/document.xml)');
+  const xmlString = await docXmlFile.async('string');
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlString, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length > 0) {
+    throw new Error('Failed to parse document.xml');
+  }
+  const paragraphs = extractParagraphs(doc);
+  const effectiveWordsPerChunk =
+    targetWordsPerChunk && targetWordsPerChunk > 0
+      ? targetWordsPerChunk
+      : recommendChunkSize(paragraphs);
+  const sections = buildSections(paragraphs, effectiveWordsPerChunk);
+
+  // Map each paragraph index to (sectionIndex, sectionTooShort).
+  const sectionByParaIndex = new Map<number, { sectionIndex: number; tooShort: boolean }>();
+  sections.forEach((s, sIdx) => {
+    const tooShort = s.text.trim().length < MIN_HUMANIZE_CHARS;
+    for (const p of s.paragraphs) {
+      sectionByParaIndex.set(p.paragraphIndex, { sectionIndex: sIdx, tooShort });
+    }
+  });
+
+  const out: PreviewParagraph[] = paragraphs.map((p) => {
+    const meta = sectionByParaIndex.get(p.paragraphIndex);
+    return {
+      index: p.paragraphIndex,
+      text: p.text,
+      wordCount: countWords(p.text),
+      humanizable: p.humanizable,
+      skipReason: p.skipReason,
+      sectionIndex: meta?.sectionIndex ?? -1,
+      tooShort: meta?.tooShort ?? false,
+    };
+  });
+
+  return {
+    paragraphs: out,
+    sections: sections.length,
+    effectiveWordsPerChunk,
+  };
+}
+

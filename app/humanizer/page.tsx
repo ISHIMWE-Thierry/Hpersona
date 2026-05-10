@@ -6,10 +6,12 @@ import { Loader2, CheckCircle2, XCircle, AlertCircle, Download, Trash2, FileText
 import {
   humanizeDocxFile,
   analyzeDocxFile,
+  previewDocxFile,
   CREDIT_SAFETY_MULTIPLIER,
   type ProgressUpdate,
   type HumanizeOptions,
   type DocxAnalysis,
+  type PreviewReport,
 } from '@/lib/docx-humanizer';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -72,6 +74,8 @@ export default function HumanizerPage() {
   const [usage, setUsage] = useState<UsageDoc | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<DocxAnalysis | null>(null);
+  const [preview, setPreview] = useState<PreviewReport | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const progressSectionRef = useRef<HTMLDivElement | null>(null);
   const liveLogRef = useRef<HTMLDivElement | null>(null);
@@ -162,6 +166,8 @@ export default function HumanizerPage() {
     setLogs([]);
     setFile(f);
     setAnalysis(null);
+    setPreview(null);
+    setShowPreview(false);
     setPhase('idle');
     // New file → re-enable auto chunk-size recommendation.
     setChunkWordsTouched(false);
@@ -191,12 +197,25 @@ export default function HumanizerPage() {
         if (!chunkWordsTouched && report.recommendedWordsPerChunk !== chunkWords) {
           setChunkWords(report.recommendedWordsPerChunk);
         }
+        // Build the per-paragraph preview using the same effective chunk size
+        // we just analyzed with. Done in parallel-ish (after analyze) so the
+        // chunk-size update doesn't race the preview.
+        const effective =
+          chunkWordsTouched && chunkWords > 0
+            ? chunkWords
+            : report.recommendedWordsPerChunk;
+        return previewDocxFile(file, effective);
+      })
+      .then((pv) => {
+        if (cancelled || !pv) return;
+        setPreview(pv);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
         setError(`Unable to analyze document: ${msg}`);
         setAnalysis(null);
+        setPreview(null);
       })
       .finally(() => {
         if (!cancelled) setAnalyzing(false);
@@ -456,6 +475,8 @@ export default function HumanizerPage() {
     setTotal(0);
     setRebuildPct(0);
     setAnalysis(null);
+    setPreview(null);
+    setShowPreview(false);
     setPhase('idle');
   };
 
@@ -783,6 +804,85 @@ export default function HumanizerPage() {
                     : `${analysis.effectiveWordsPerChunk} words (auto · recommended ${analysis.recommendedWordsPerChunk})`}
                 </p>
               </div>
+              {preview && (
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowPreview((v) => !v)}
+                    className="inline-flex items-center gap-2 text-xs font-semibold text-slate-900 underline underline-offset-4 hover:text-slate-600"
+                  >
+                    {showPreview ? 'Hide preview' : 'Preview which paragraphs will be humanized'}
+                    <span className="text-slate-500 font-normal">
+                      ({preview.paragraphs.filter((p) => p.humanizable && !p.tooShort).length}{' '}
+                      will humanize ·{' '}
+                      {preview.paragraphs.filter((p) => !p.humanizable || p.tooShort).length}{' '}
+                      verbatim)
+                    </span>
+                  </button>
+                  {showPreview && (
+                    <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+                      <div className="mb-2 flex flex-wrap gap-3 text-[11px] text-slate-600">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="inline-block h-3 w-3 rounded-sm bg-emerald-200 border border-emerald-300" />
+                          Will humanize
+                        </span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="inline-block h-3 w-3 rounded-sm bg-amber-100 border border-amber-300" />
+                          Too short — kept as original
+                        </span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="inline-block h-3 w-3 rounded-sm bg-slate-100 border border-slate-300" />
+                          Preserved verbatim (table / image / formula / heading / link)
+                        </span>
+                      </div>
+                      <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2 space-y-1.5 font-serif text-[13px] leading-relaxed">
+                        {preview.paragraphs.map((p) => {
+                          if (!p.text.trim()) {
+                            // Empty paragraph — render a thin spacer so the
+                            // structure is still visible without taking room.
+                            return <div key={p.index} className="h-1" />;
+                          }
+                          let cls =
+                            'rounded px-2 py-1 text-slate-900 bg-emerald-100/80 border border-emerald-200';
+                          let badge: string | null = null;
+                          if (!p.humanizable) {
+                            cls =
+                              'rounded px-2 py-1 text-slate-500 bg-slate-100 border border-slate-200 line-through decoration-slate-400/60';
+                            badge = p.skipReason || 'preserved';
+                          } else if (p.tooShort) {
+                            cls =
+                              'rounded px-2 py-1 text-slate-700 bg-amber-50 border border-amber-200';
+                            badge = 'too short';
+                          }
+                          // Truncate very long paragraphs for the preview only.
+                          const display =
+                            p.text.length > 600 ? p.text.slice(0, 600) + '…' : p.text;
+                          return (
+                            <div key={p.index} className={cls}>
+                              {badge && (
+                                <span className="mr-2 inline-block rounded-sm bg-white/70 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-slate-600">
+                                  {badge}
+                                </span>
+                              )}
+                              <span className="whitespace-pre-wrap break-words">
+                                {display}
+                              </span>
+                              <span className="ml-2 text-[10px] text-slate-400 font-mono">
+                                ¶{p.index + 1} · {p.wordCount}w
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="mt-2 text-[11px] text-slate-500">
+                        Highlighted (green) paragraphs will be sent to the humanizer in{' '}
+                        {preview.sections} section(s) of ~{preview.effectiveWordsPerChunk} words each.
+                        Everything else is reproduced exactly as written.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-900">
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
