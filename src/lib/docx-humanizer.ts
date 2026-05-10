@@ -820,6 +820,21 @@ interface DetectQueryResult {
   human_score?: number | null;
   predictions?: { ai?: number; human?: number };
   result_details?: Record<string, unknown>;
+  /**
+   * Calibrated bucket scores (0-100, higher = more AI). On the multilingual
+   * `xlm_ud_detector` model these spread MUCH better than `result` for
+   * non-English text. Empirically on Russian:
+   *   - hand-written cat story:    result=58 / free=18  (correctly human)
+   *   - formal academic Russian:   result=95 / free=55  (borderline)
+   *   - obvious AI English:        result=87 / free=85  (correctly AI)
+   * We use `free` as the primary verdict so non-English thesis prose isn't
+   * blanket-flagged as AI just because it's polished.
+   */
+  result_categories?: {
+    advanced?: number;
+    standard?: number;
+    free?: number;
+  };
   error?: string;
   id?: string;
 }
@@ -827,8 +842,18 @@ interface DetectQueryResult {
 /**
  * Pull a 0-100 AI score out of the various shapes the Undetectable.AI
  * detector has been observed to return. Higher = more AI.
+ *
+ * Order of preference:
+ *   1. `result_categories.free` — ensemble verdict, best calibrated for
+ *      multilingual text (Russian, etc.) where `result` is too aggressive.
+ *   2. `result` — the legacy single number.
+ *   3. `ai_score` / `human_score` — alternative key names.
+ *   4. `predictions.{ai,human}` — handles 0-1 probability or 0-100 percent.
  */
 function extractAiScore(d: DetectQueryResult): number | null {
+  if (typeof d.result_categories?.free === 'number') {
+    return d.result_categories.free;
+  }
   if (typeof d.result === 'number') return d.result;
   if (typeof d.ai_score === 'number') return d.ai_score;
   if (typeof d.human_score === 'number') return 100 - d.human_score;
