@@ -212,11 +212,42 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ text: out });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[translate]', msg);
-    const status = msg.match(/\b(401|402|403|429|5\d\d)\b/);
+    // OpenRouter (and Anthropic via OpenRouter) returns rich error bodies
+    // on the `error` object — surface them so we can see WHY the upstream
+    // 403/402/429 happened (out of credits? key disabled? model access?).
+    type OpenRouterErr = {
+      status?: number;
+      code?: number | string;
+      error?: { message?: string; code?: number | string; type?: string; metadata?: unknown };
+      response?: { data?: unknown; status?: number };
+      message?: string;
+    };
+    const e = err as OpenRouterErr;
+    const upstreamStatus =
+      e?.status ?? e?.response?.status ?? Number(e?.error?.code) ?? null;
+    const upstreamMsg = e?.error?.message ?? e?.message ?? msg;
+    const upstreamMeta = e?.error?.metadata ?? e?.response?.data ?? null;
+    console.error('[translate] upstream error', {
+      status: upstreamStatus,
+      message: upstreamMsg,
+      meta: upstreamMeta,
+    });
+    const statusMatch = msg.match(/\b(401|402|403|429|5\d\d)\b/);
+    const status =
+      (typeof upstreamStatus === 'number' && upstreamStatus) ||
+      (statusMatch ? Number(statusMatch[1]) : 500);
+    // Hint the client whether retrying makes sense. Auth/quota/permission
+    // errors WILL repeat on retry → mark fatal so the docx-humanizer can
+    // abort the run instead of looping per section.
+    const fatal = status === 401 || status === 402 || status === 403;
     return NextResponse.json(
-      { error: msg },
-      { status: status ? Number(status[1]) : 500 }
+      {
+        error: upstreamMsg,
+        status,
+        fatal,
+        meta: upstreamMeta,
+      },
+      { status }
     );
   }
 }

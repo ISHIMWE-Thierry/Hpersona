@@ -1017,9 +1017,24 @@ async function translateOnce(
       const data = (await res.json().catch(() => ({}))) as {
         text?: string;
         error?: string;
+        status?: number;
+        fatal?: boolean;
       };
       if (!res.ok) {
-        // Fatal vs transient
+        // Fatal upstream errors (auth/quota/permission) — retrying just
+        // wastes time and credits across every remaining section.
+        // Throw a TranslateFatalError so the per-section retry loop and
+        // the document-level loop both bail immediately.
+        if (data?.fatal || res.status === 401 || res.status === 402 || res.status === 403) {
+          const e = new Error(
+            data?.error
+              ? `${data.error} (HTTP ${res.status})`
+              : `Translate failed (${res.status})`
+          );
+          (e as Error & { fatal?: boolean }).fatal = true;
+          throw e;
+        }
+        // Transient — retry with backoff.
         if ([429, 500, 502, 503, 504].includes(res.status)) {
           lastError = new Error(data?.error || `Translate failed (${res.status})`);
           await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt)));
@@ -1033,6 +1048,8 @@ async function translateOnce(
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       if (lastError.message === 'Aborted') throw lastError;
+      // Don't keep retrying fatal upstream errors — propagate immediately.
+      if ((lastError as Error & { fatal?: boolean }).fatal) throw lastError;
       if (attempt === 3) break;
       await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt)));
     }
@@ -1448,7 +1465,9 @@ export async function humanizeDocxFile(
         if (attempt === MAX_SECTION_RETRIES) break;
         // Hard-fail on credit / auth issues — no amount of retrying fixes them.
         const cause = (lastError as Error & { cause?: string }).cause || '';
+        const flaggedFatal = (lastError as Error & { fatal?: boolean }).fatal === true;
         const fatal =
+          flaggedFatal ||
           /insufficient|not allowed|api key|forbidden|401|403|402/i.test(
             (lastError.message || '') + ' ' + cause
           );
@@ -1472,11 +1491,14 @@ export async function humanizeDocxFile(
       // rest of the document still completes. Original text stays in place.
       skippedSections += 1;
       const cause = lastError && (lastError as Error & { cause?: string }).cause;
+      const flaggedFatal =
+        !!lastError && (lastError as Error & { fatal?: boolean }).fatal === true;
       const fatal =
-        cause &&
-        /insufficient|not allowed|api key|forbidden|401|403|402/i.test(
-          (lastError?.message || '') + ' ' + cause
-        );
+        flaggedFatal ||
+        (cause &&
+          /insufficient|not allowed|api key|forbidden|401|403|402/i.test(
+            (lastError?.message || '') + ' ' + cause
+          ));
       if (fatal && lastError) {
         // No point continuing if we'll just re-fail every remaining section.
         throw lastError;
