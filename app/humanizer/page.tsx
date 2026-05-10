@@ -81,7 +81,11 @@ export default function HumanizerPage() {
   const [purpose, setPurpose] = useState('General Writing');
   const [strength, setStrength] = useState('Balanced');
   const [model, setModel] = useState('v11');
-  const [chunkWords, setChunkWords] = useState(300);
+  // 0 = auto (recommended size determined from document analysis).
+  const [chunkWords, setChunkWords] = useState(0);
+  // Tracks whether the user has manually overridden the chunk size.
+  // Until they do, every fresh analysis updates the field automatically.
+  const [chunkWordsTouched, setChunkWordsTouched] = useState(false);
 
   const { user } = useAuth();
 
@@ -159,6 +163,8 @@ export default function HumanizerPage() {
     setFile(f);
     setAnalysis(null);
     setPhase('idle');
+    // New file → re-enable auto chunk-size recommendation.
+    setChunkWordsTouched(false);
   }, []);
 
   const handleDrop = (e: React.DragEvent<HTMLLabelElement>) => {
@@ -174,11 +180,17 @@ export default function HumanizerPage() {
     if (!file || isBusy) return;
     let cancelled = false;
     setAnalyzing(true);
-    analyzeDocxFile(file, chunkWords)
+    analyzeDocxFile(file, chunkWordsTouched ? chunkWords : 0)
       .then((report) => {
         if (cancelled) return;
         setAnalysis(report);
         setError(null);
+        // If the user hasn't touched the field, snap chunk size to the
+        // analyzer's recommendation. Guard against the loop: only update
+        // when the value actually differs.
+        if (!chunkWordsTouched && report.recommendedWordsPerChunk !== chunkWords) {
+          setChunkWords(report.recommendedWordsPerChunk);
+        }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -192,7 +204,7 @@ export default function HumanizerPage() {
     return () => {
       cancelled = true;
     };
-  }, [file, chunkWords, isBusy]);
+  }, [file, chunkWords, chunkWordsTouched, isBusy]);
 
   // Auto-refresh credits when analysis arrives so the banner is never stale.
   useEffect(() => {
@@ -301,18 +313,21 @@ export default function HumanizerPage() {
       progressSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 60);
 
+    // When the user hasn't overridden chunk size, pass 0 so the humanizer
+    // (and analyzer) auto-pick the recommended size from the document itself.
+    const effectiveChunk = chunkWordsTouched ? chunkWords : 0;
     const opts: HumanizeOptions = {
       readability,
       purpose,
       strength,
       model,
-      targetWordsPerChunk: chunkWords,
+      targetWordsPerChunk: effectiveChunk,
     };
 
     try {
       let report = analysis;
       if (!report) {
-        report = await analyzeDocxFile(file, chunkWords);
+        report = await analyzeDocxFile(file, effectiveChunk);
         setAnalysis(report);
       }
 
@@ -670,14 +685,39 @@ export default function HumanizerPage() {
               </label>
               <input
                 type="number"
-                min={300}
+                min={50}
                 max={1000}
                 step={50}
-                value={chunkWords}
+                value={chunkWords || ''}
+                placeholder={
+                  analysis
+                    ? `Auto · ${analysis.recommendedWordsPerChunk}`
+                    : 'Auto'
+                }
                 disabled={isBusy}
-                onChange={(e) => setChunkWords(Math.max(300, Number(e.target.value) || 300))}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === '') {
+                    // Empty = revert to auto.
+                    setChunkWordsTouched(false);
+                    setChunkWords(analysis?.recommendedWordsPerChunk ?? 0);
+                    return;
+                  }
+                  const n = Math.max(50, Math.min(1000, Number(raw) || 0));
+                  setChunkWordsTouched(true);
+                  setChunkWords(n);
+                }}
                 className="mt-1 w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 focus:outline-none focus:border-slate-900 disabled:opacity-50"
               />
+              <p className="mt-1 text-[10px] text-slate-500">
+                {chunkWordsTouched
+                  ? `Manual · clear field to use auto (${
+                      analysis?.recommendedWordsPerChunk ?? '—'
+                    })`
+                  : `Auto-tuned to document size${
+                      analysis ? ` · ${analysis.recommendedWordsPerChunk} words` : ''
+                    }`}
+              </p>
             </div>
           </div>
 
@@ -717,6 +757,31 @@ export default function HumanizerPage() {
                 Undetectable.AI bills both input and output. We multiply the input words by{' '}
                 {CREDIT_SAFETY_MULTIPLIER}× as a safety margin so jobs don&apos;t fail mid-run.
                 Sections under 50 characters are skipped.
+              </div>
+              <div className="mt-3 rounded-xl bg-white border border-slate-200 p-3 text-xs text-slate-700">
+                <p className="font-semibold text-slate-900 mb-1">
+                  Pure-text paragraphs · {analysis.pureTextParagraphs.toLocaleString()}{' '}
+                  ({analysis.pureTextWords.toLocaleString()} words)
+                </p>
+                <p>
+                  These paragraphs contain only running text (no tables, pictures,
+                  formulas, headings, hyperlinks, or math) and{' '}
+                  <span className="font-semibold">will be humanized</span>.
+                  {analysis.preservedParagraphs > 0 && (
+                    <>
+                      {' '}
+                      The other {analysis.preservedParagraphs.toLocaleString()}{' '}
+                      paragraph(s) — tables, images, formulas, captions, headings —
+                      are preserved verbatim.
+                    </>
+                  )}
+                </p>
+                <p className="mt-1 text-slate-500">
+                  Section size:{' '}
+                  {chunkWordsTouched
+                    ? `${analysis.effectiveWordsPerChunk} words (manual)`
+                    : `${analysis.effectiveWordsPerChunk} words (auto · recommended ${analysis.recommendedWordsPerChunk})`}
+                </p>
               </div>
               <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-900">
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">

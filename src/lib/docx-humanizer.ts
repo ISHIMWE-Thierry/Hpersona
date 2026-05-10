@@ -44,16 +44,12 @@ const MAX_SECTION_RETRIES = 4;
 const RETRY_BASE_DELAY_MS = 2500;
 
 /**
- * Minimum section size that gets humanized. Below this we keep the original
- * text. Two reasons:
- *   1. The humanizer is unreliable on tiny inputs (it pads / paraphrases
- *      single sentences in unhelpful ways and frequently rejects sub-50-char
- *      payloads outright).
- *   2. The AI detector requires ≥200 words for accurate scoring; sections
- *      below 300 words are too short to reliably classify either way.
- * Sections under this threshold are left as the user wrote them.
+ * Hard floor enforced by the humanizer service: payloads under 50 characters
+ * are rejected. We don't impose any additional word-count minimum — every
+ * text-only section the document analyzer found gets humanized. Sections
+ * shorter than 50 chars are kept verbatim (they'd be rejected anyway).
  */
-const MIN_HUMANIZE_WORDS = 300;
+const MIN_HUMANIZE_CHARS = 50;
 
 /**
  * AI-detection threshold (per Undetectable.AI docs):
@@ -62,6 +58,26 @@ const MIN_HUMANIZE_WORDS = 300;
  *   > 60 → definitely AI      (humanize)
  */
 const AI_DETECTION_THRESHOLD = 50;
+
+/**
+ * Recommend a `targetWordsPerChunk` value purely from paragraph data, without
+ * having to chunk first. Used when the caller passes 0/undefined (auto mode)
+ * so the document is analyzed and divided automatically based on its size.
+ *
+ * Sweet spot for undetectable.AI quality is 200–400 words/chunk: large
+ * enough for the humanizer to keep cross-sentence context, small enough to
+ * survive credit limits and recover quickly from transient failures.
+ */
+function recommendChunkSize(paragraphs: ParagraphChunk[]): number {
+  let humanizableWords = 0;
+  for (const p of paragraphs) {
+    if (p.humanizable) humanizableWords += countWords(p.text);
+  }
+  if (humanizableWords < 1500) return 250;
+  if (humanizableWords < 8000) return 300;
+  if (humanizableWords < 25_000) return 350;
+  return 400;
+}
 
 export interface HumanizeOptions {
   readability: string;
@@ -921,24 +937,31 @@ export async function humanizeDocxFile(
     throw new Error('Failed to parse document.xml');
   }
 
-  onProgress({ phase: 'chunking', message: 'Splitting into sections…' });
+  onProgress({ phase: 'chunking', message: 'Analysing document & splitting into sections…' });
   const paragraphs = extractParagraphs(doc);
-  const sections = buildSections(paragraphs, options.targetWordsPerChunk);
-  // Sections must hit MIN_HUMANIZE_WORDS (300) to be eligible for humanization.
-  // Smaller sections are kept verbatim — too short for the humanizer to
-  // produce meaningful output and below the AI-detector accuracy threshold.
+  // Auto-recommend chunk size from the document if caller passed 0/undefined.
+  const requestedChunkSize = options.targetWordsPerChunk;
+  const effectiveChunkSize =
+    requestedChunkSize && requestedChunkSize > 0
+      ? requestedChunkSize
+      : recommendChunkSize(paragraphs);
+  const sections = buildSections(paragraphs, effectiveChunkSize);
+  // Every text-only section gets humanized. Only the 50-char API floor is
+  // enforced (the humanizer rejects shorter payloads). Headings, tables,
+  // pictures, formulas etc. are already flagged non-humanizable upstream
+  // and pass through verbatim with zero word count.
   const meaningful = sections.filter(
-    (s) => s.wordCount >= MIN_HUMANIZE_WORDS && s.text.trim().length >= 50
+    (s) => s.wordCount > 0 && s.text.trim().length >= MIN_HUMANIZE_CHARS
   );
-  const undersizedCount = sections.filter(
-    (s) => s.wordCount > 0 && s.wordCount < MIN_HUMANIZE_WORDS
+  const tinySkipped = sections.filter(
+    (s) => s.wordCount > 0 && s.text.trim().length < MIN_HUMANIZE_CHARS
   ).length;
   onProgress({
     phase: 'chunking',
     message:
       `Found ${paragraphs.length} paragraphs in ${sections.length} sections ` +
-      `(${meaningful.length} ≥${MIN_HUMANIZE_WORDS} words to humanize` +
-      (undersizedCount > 0 ? `, ${undersizedCount} kept as original` : '') +
+      `(target ≈${effectiveChunkSize} words/section, ${meaningful.length} to humanize` +
+      (tinySkipped > 0 ? `, ${tinySkipped} too short` : '') +
       `).`,
     total: meaningful.length,
     current: 0,
@@ -989,12 +1012,9 @@ export async function humanizeDocxFile(
   const skipHumanSections = options.skipHumanSections !== false; // default true
   for (const section of sections) {
     if (signal?.aborted) throw new Error('Aborted');
-    if (
-      section.wordCount < MIN_HUMANIZE_WORDS ||
-      section.text.trim().length < 50
-    ) {
-      // Below 300-word minimum (or empty/non-humanizable pass-through) — keep
-      // original. No API call, no credits consumed.
+    if (section.wordCount === 0 || section.text.trim().length < MIN_HUMANIZE_CHARS) {
+      // Empty / non-humanizable pass-through OR shorter than the API's 50-char
+      // floor. Keep original — no API call, no credits consumed.
       continue;
     }
     processed += 1;
@@ -1299,16 +1319,28 @@ export interface DocxAnalysis {
   paragraphs: number;
   sections: number;
   billableSections: number;
+  /** Auto-recommended chunk size based on document length. */
+  recommendedWordsPerChunk: number;
+  /** Effective chunk size used for the section split (caller's value or auto). */
+  effectiveWordsPerChunk: number;
+  /** Pure-text paragraphs (no tables, pictures, formulas, headings, math, links). */
+  pureTextParagraphs: number;
+  /** Words contained in those pure-text paragraphs. */
+  pureTextWords: number;
+  /** Paragraphs that will be passed through verbatim (non-humanizable). */
+  preservedParagraphs: number;
 }
 
 /**
  * Inspect a .docx and report how many words would actually be sent to the
  * humanizer (i.e. what would be billed against your Undetectable.AI credits).
  * Sections under 50 chars are skipped by the humanizer flow and not counted.
+ *
+ * Pass `targetWordsPerChunk = 0` (or omit) for auto-recommended chunking.
  */
 export async function analyzeDocxFile(
   file: File,
-  targetWordsPerChunk: number
+  targetWordsPerChunk: number = 0
 ): Promise<DocxAnalysis> {
   const buf = await file.arrayBuffer();
   const zip = await JSZip.loadAsync(buf);
@@ -1321,13 +1353,30 @@ export async function analyzeDocxFile(
     throw new Error('Failed to parse document.xml');
   }
   const paragraphs = extractParagraphs(doc);
-  const sections = buildSections(paragraphs, targetWordsPerChunk);
+  const recommendedWordsPerChunk = recommendChunkSize(paragraphs);
+  const effectiveWordsPerChunk =
+    targetWordsPerChunk && targetWordsPerChunk > 0
+      ? targetWordsPerChunk
+      : recommendedWordsPerChunk;
+  const sections = buildSections(paragraphs, effectiveWordsPerChunk);
   let totalWords = 0;
   let estimatedInputWords = 0;
   let billableSections = 0;
-  for (const p of paragraphs) totalWords += countWords(p.text);
+  let pureTextParagraphs = 0;
+  let pureTextWords = 0;
+  let preservedParagraphs = 0;
+  for (const p of paragraphs) {
+    const w = countWords(p.text);
+    totalWords += w;
+    if (p.humanizable) {
+      pureTextParagraphs += 1;
+      pureTextWords += w;
+    } else if (p.text.trim().length > 0) {
+      preservedParagraphs += 1;
+    }
+  }
   for (const s of sections) {
-    if (s.wordCount > 0 && s.text.trim().length >= 50) {
+    if (s.wordCount > 0 && s.text.trim().length >= MIN_HUMANIZE_CHARS) {
       estimatedInputWords += s.wordCount;
       billableSections += 1;
     }
@@ -1339,5 +1388,10 @@ export async function analyzeDocxFile(
     paragraphs: paragraphs.length,
     sections: sections.length,
     billableSections,
+    recommendedWordsPerChunk,
+    effectiveWordsPerChunk,
+    pureTextParagraphs,
+    pureTextWords,
+    preservedParagraphs,
   };
 }
