@@ -237,6 +237,25 @@ function isInsideTable(p: Element): boolean {
   return false;
 }
 
+/**
+ * Detect a hard page break inside a paragraph: <w:br w:type="page"/> or
+ * <w:lastRenderedPageBreak/>. Used to slice the document into pages so we
+ * can blanket-skip the cover page (page 1) — title, university, supervisor,
+ * date, signature lines, etc. should never be re-written.
+ */
+function hasPageBreak(p: Element): boolean {
+  const brs = p.getElementsByTagNameNS(W_NS, 'br');
+  for (let i = 0; i < brs.length; i++) {
+    const t =
+      brs[i].getAttributeNS(W_NS, 'type') || brs[i].getAttribute('w:type') || '';
+    if (t.toLowerCase() === 'page') return true;
+  }
+  if (p.getElementsByTagNameNS(W_NS, 'lastRenderedPageBreak').length > 0) {
+    return true;
+  }
+  return false;
+}
+
 /** Read the paragraph style id from <w:pPr><w:pStyle w:val="…"/>. */
 function paragraphStyleId(p: Element): string {
   const pPr = p.getElementsByTagNameNS(W_NS, 'pPr')[0];
@@ -291,11 +310,19 @@ function classifyParagraph(p: Element): { humanizable: boolean; reason?: string 
     }
   }
 
+  // Text-based TOC entry: a line that ends with dot leaders followed by a
+  // page number, e.g. "1.1 Метрический тензор ............... 8" or
+  // "Введение ............... 4". Catches manually-typed and partially
+  // converted TOCs that don't carry a `<w:fldSimple TOC>` instruction.
+  const rawText = (p.textContent || '').trim();
+  if (rawText && /[.·\u00B7\u2026]{3,}\s*\d{1,4}\s*$/.test(rawText)) {
+    return { humanizable: false, reason: 'toc-entry' };
+  }
+
   // Text-based formula / equation detection. Word stores many formulas as
   // plain text (especially when copy-pasted from LaTeX, MathType, or
   // exported PDFs), so OMML detection above isn't enough. We look at the
   // raw paragraph text and bail out if it looks like an equation.
-  const rawText = (p.textContent || '').trim();
   if (rawText && looksLikeFormula(rawText)) {
     return { humanizable: false, reason: 'formula/text-math' };
   }
@@ -326,21 +353,19 @@ function looksLikeFormula(text: string): boolean {
   if (/\\\([^)]*\\\)/.test(text)) return true;
   if (/\\\[[^\]]*\\\]/.test(text)) return true;
 
-  // 2. LaTeX commands (\word) — needs at least 2 distinct commands OR one
-  // strong command to avoid false positives on the occasional backslash.
+  // 2. LaTeX commands (\word). Even ONE strong command (e.g. \nabla, \frac,
+  // \mu, \Gamma) is enough — a thesis paragraph that mentions a TeX command
+  // is almost always inside an equation context, never running prose.
   const latexCmds = text.match(/\\[a-zA-Z]{2,}/g) || [];
-  if (latexCmds.length >= 2) return true;
-  const strongLatex =
-    /\\(displaystyle|mathcal|mathbb|mathrm|frac|sum|int|sqrt|partial|nabla|begin|end|left|right|cdot|times|otimes|oplus|infty|alpha|beta|gamma|delta|theta|lambda|sigma|omega|mu|nu|xi|phi|psi|chi|rho|tau|epsilon|Gamma|Lambda|Sigma|Omega|Phi|Psi|Theta|Delta)\b/.test(
-      text
-    );
-  if (strongLatex) return true;
+  if (latexCmds.length >= 1) return true;
 
   // 3. {\displaystyle ...}, {\mathcal ...} pseudo-LaTeX (Wikipedia-style)
   if (/\{\\[a-zA-Z]/.test(text)) return true;
 
-  // 4. Math-symbol density. We look at alphanumeric+symbol characters only
-  // (exclude whitespace) and check what fraction are math glyphs.
+  // 4. Math-symbol density. Lowered from 12% → 6% so paragraphs that are
+  // mostly prose but happen to embed a couple of math expressions still get
+  // skipped (better safe than sorry — humanizing "ds² = exp(Φ)…" mid-paragraph
+  // wrecks the formula).
   const noSpace = text.replace(/\s+/g, '');
   if (noSpace.length >= 8) {
     const mathChars =
@@ -349,14 +374,23 @@ function looksLikeFormula(text: string): boolean {
         /[∂∇∑∏∫√≈≠≤≥±×÷⊗⊕∈∉∀∃∅∞∝∼≡⊂⊃⊆⊇∪∩→←↔⇒⇐⇔αβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ₀₁₂₃₄₅₆₇₈₉⁰¹²³⁴⁵⁶⁷⁸⁹]/gu
       ) || [];
     const ratio = mathChars.length / noSpace.length;
-    if (ratio >= 0.12) return true;
+    if (ratio >= 0.06) return true;
   }
 
-  // 5. Equation-numbering tail. A short paragraph that is essentially
-  // "<expression> (5.9)" or "<expression> (3.1)".
-  if (text.length < 400 && /\(\s*\d+(\.\d+)?\s*\)\s*$/.test(text)) {
-    // Also require it to *look* like an expression — at least one '=' or
-    // a math/Greek/sub-superscript glyph.
+  // 5. Any presence of a "hard" math operator (∂∇∑∏∫√⊗⊕∈∉∀∃) in combination
+  // with an "=" sign — that's almost certainly an inline equation, regardless
+  // of overall length.
+  if (
+    /[∂∇∑∏∫√⊗⊕∈∉∀∃≡≈≠≤≥±]/u.test(text) &&
+    /=/.test(text)
+  ) {
+    return true;
+  }
+
+  // 6. Equation-numbering tail. A paragraph that ends with "(n.n)" or "(n)"
+  // and contains anything math-ish — '=' OR a Greek/symbol/sub-superscript —
+  // is an equation followed by its label.
+  if (/\(\s*\d+(\.\d+)?\s*\)\s*$/.test(text)) {
     if (
       /=/.test(text) ||
       /[∂∇∑∏∫√αβγδεζηθλμνξπρστφχψωΓΔΛΣΦΨΩ₀₁₂₃⁰¹²³]/u.test(text)
@@ -365,9 +399,17 @@ function looksLikeFormula(text: string): boolean {
     }
   }
 
-  // 6. Equation-token-dominated short lines: "ds²=Exp[Φ₁₁+(Φ₁₂+Φ₂₂)X₂](dX₁²−X₁²dX₂²)..."
+  // 7. Multiple "=" signs in a short paragraph → equation chain.
+  // (e.g. "a = b = c²/d" or "ds² = -dt² + dr² = …")
+  if (text.length < 400) {
+    const eqs = text.match(/=/g) || [];
+    if (eqs.length >= 2) return true;
+  }
+
+  // 8. Equation-token-dominated short lines: "ds²=Exp[Φ₁₁+(Φ₁₂+Φ₂₂)X₂](dX₁²−X₁²dX₂²)..."
   // — text under 600 chars where a high fraction of characters are operators,
   // brackets, digits, single-letter identifiers, or sub/superscripts.
+  // Lowered ratio 0.35 → 0.30 to catch borderline cases.
   if (text.length < 600 && /=/.test(text)) {
     const opChars =
       noSpace.match(
@@ -375,7 +417,7 @@ function looksLikeFormula(text: string): boolean {
       ) || [];
     const digits = noSpace.match(/[0-9]/g) || [];
     const opRatio = (opChars.length + digits.length) / noSpace.length;
-    if (opRatio >= 0.35) return true;
+    if (opRatio >= 0.3) return true;
   }
 
   return false;
@@ -500,6 +542,24 @@ function latinLeakRatio(text: string): number {
 function extractParagraphs(doc: Document): ParagraphChunk[] {
   const paragraphs: ParagraphChunk[] = [];
   const pNodes = Array.from(doc.getElementsByTagNameNS(W_NS, 'p'));
+
+  // Identify the cover page = every paragraph from index 0 up to and
+  // including the first one that contains an explicit page break. This
+  // captures the title-page block (university name, faculty, document type,
+  // student details, supervisor, date, "Москва 2026", etc.) which must
+  // NEVER be rewritten — it's institutional boilerplate.
+  let coverEndExclusive = 0;
+  for (let i = 0; i < pNodes.length; i++) {
+    if (hasPageBreak(pNodes[i])) {
+      coverEndExclusive = i + 1; // include the breaking paragraph itself
+      break;
+    }
+  }
+  // Safety cap: if the doc has no page break at all, don't blanket-skip
+  // the entire file. Cap the cover at 60 paragraphs (a generous title
+  // page is ~20 lines; 60 is a hard upper bound).
+  if (coverEndExclusive > 60) coverEndExclusive = 60;
+
   pNodes.forEach((p, idx) => {
     // Only collect <w:t> elements that are direct text of this paragraph
     // (not inside a hyperlink/field — those paragraphs are skipped wholesale
@@ -507,7 +567,12 @@ function extractParagraphs(doc: Document): ParagraphChunk[] {
     const tNodes = Array.from(p.getElementsByTagNameNS(W_NS, 't'));
     const runs: RunRef[] = tNodes.map((t) => ({ tNode: t, text: t.textContent || '' }));
     const text = runs.map((r) => r.text).join('');
-    const { humanizable, reason } = classifyParagraph(p);
+    let { humanizable, reason } = classifyParagraph(p);
+    // Cover-page override — wins over every other classification.
+    if (humanizable && idx < coverEndExclusive) {
+      humanizable = false;
+      reason = 'cover-page';
+    }
     paragraphs.push({
       paragraphIndex: idx,
       runs,
