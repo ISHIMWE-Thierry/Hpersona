@@ -128,6 +128,11 @@ export default function HumanizerPage() {
     let humanizeSections = 0;
     let humanWords = 0;
     let humanSections = 0;
+    let scoredSections = 0;
+    let failedSections = 0;
+    let tooShortSections = 0;
+    let aiSumScore = 0;
+    let aiMaxScore = 0;
     for (const r of aiResults) {
       if (r.alreadyHuman) {
         humanSections += 1;
@@ -136,6 +141,15 @@ export default function HumanizerPage() {
       } else {
         humanizeSections += 1;
         humanizeWords += r.wordCount;
+      }
+      if (typeof r.aiScore === 'number') {
+        scoredSections += 1;
+        aiSumScore += r.aiScore;
+        if (r.aiScore > aiMaxScore) aiMaxScore = r.aiScore;
+      } else if (r.detectionReason === 'too-short') {
+        tooShortSections += 1;
+      } else {
+        failedSections += 1;
       }
     }
     const billableWords = Math.ceil(humanizeWords * CREDIT_SAFETY_MULTIPLIER);
@@ -146,6 +160,12 @@ export default function HumanizerPage() {
       humanWords,
       humanSections,
       billableWords,
+      scoredSections,
+      failedSections,
+      tooShortSections,
+      avgAiScore: scoredSections > 0 ? aiSumScore / scoredSections : null,
+      maxAiScore: scoredSections > 0 ? aiMaxScore : null,
+      totalSections: aiResults.length,
     };
   }, [preview, aiResults]);
 
@@ -961,15 +981,30 @@ export default function HumanizerPage() {
                         </div>
                       </div>
                       {aiAdjusted && (
-                        <div className="mb-3 rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-xs text-sky-900">
-                          AI re-check found{' '}
-                          <span className="font-semibold">
-                            {aiAdjusted.humanSections} section(s) ({aiAdjusted.humanWords.toLocaleString()} words)
-                          </span>{' '}
-                          that are already human-written — they will be kept verbatim and won&rsquo;t cost credits. Updated estimate:{' '}
-                          <span className="font-semibold">
-                            {aiAdjusted.humanizeWords.toLocaleString()} words to humanize · {aiAdjusted.billableWords.toLocaleString()} credits.
-                          </span>
+                        <div className="mb-3 rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-xs text-sky-900 space-y-1">
+                          <div>
+                            AI re-check found{' '}
+                            <span className="font-semibold">
+                              {aiAdjusted.humanSections} section(s) ({aiAdjusted.humanWords.toLocaleString()} words)
+                            </span>{' '}
+                            that are already human-written — they will be kept verbatim and won&rsquo;t cost credits. Updated estimate:{' '}
+                            <span className="font-semibold">
+                              {aiAdjusted.humanizeWords.toLocaleString()} words to humanize · {aiAdjusted.billableWords.toLocaleString()} credits.
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-sky-800/80">
+                            Detector stats: {aiAdjusted.scoredSections}/{aiAdjusted.totalSections} sections scored
+                            {aiAdjusted.avgAiScore !== null && (
+                              <> · avg AI {Math.round(aiAdjusted.avgAiScore)} · max AI {Math.round(aiAdjusted.maxAiScore ?? 0)}</>
+                            )}
+                            {aiAdjusted.tooShortSections > 0 && (
+                              <> · {aiAdjusted.tooShortSections} skipped (under 200 words)</>
+                            )}
+                            {aiAdjusted.failedSections > 0 && (
+                              <> · <span className="text-rose-700 font-semibold">{aiAdjusted.failedSections} failed</span> — open the browser console for details</>
+                            )}
+                            . Threshold for &ldquo;already human&rdquo; is AI score &lt; 50.
+                          </div>
                         </div>
                       )}
                       <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2 space-y-1.5 font-serif text-[13px] leading-relaxed">

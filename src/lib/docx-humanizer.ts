@@ -815,14 +815,59 @@ async function detectLanguage(sample: string, signal?: AbortSignal): Promise<str
 interface DetectQueryResult {
   status?: 'pending' | 'done' | 'failed';
   result?: number | null;
+  /** Some Undetectable.AI accounts return the score under different keys. */
+  ai_score?: number | null;
+  human_score?: number | null;
+  predictions?: { ai?: number; human?: number };
+  result_details?: Record<string, unknown>;
   error?: string;
   id?: string;
+}
+
+/**
+ * Pull a 0-100 AI score out of the various shapes the Undetectable.AI
+ * detector has been observed to return. Higher = more AI.
+ */
+function extractAiScore(d: DetectQueryResult): number | null {
+  if (typeof d.result === 'number') return d.result;
+  if (typeof d.ai_score === 'number') return d.ai_score;
+  if (typeof d.human_score === 'number') return 100 - d.human_score;
+  const ai = d.predictions?.ai;
+  const human = d.predictions?.human;
+  if (typeof ai === 'number') {
+    // Predictions can be 0-1 probability or 0-100 percentage.
+    return ai <= 1 ? ai * 100 : ai;
+  }
+  if (typeof human === 'number') {
+    const h = human <= 1 ? human * 100 : human;
+    return 100 - h;
+  }
+  return null;
+}
+
+/**
+ * AI-detection result with diagnostics for the preview UI.
+ *   score: numeric 0-100 (null when detection genuinely failed)
+ *   reason: short reason string when score is null (so the user/console
+ *   can see "submit-failed-503", "no-id", "timed-out", "no-score-in-result")
+ */
+interface AiScoreResult {
+  score: number | null;
+  reason?: string;
 }
 
 async function detectAiScore(
   text: string,
   signal?: AbortSignal
 ): Promise<number | null> {
+  const r = await detectAiScoreVerbose(text, signal);
+  return r.score;
+}
+
+async function detectAiScoreVerbose(
+  text: string,
+  signal?: AbortSignal
+): Promise<AiScoreResult> {
   try {
     // Submit
     const submitRes = await fetch('/api/humanizer/detect', {
@@ -831,10 +876,24 @@ async function detectAiScore(
       signal,
       body: JSON.stringify({ mode: 'submit', text }),
     });
-    if (!submitRes.ok) return null;
-    const submit = (await submitRes.json().catch(() => ({}))) as { id?: string };
+    const submitText = await submitRes.text();
+    let submit: { id?: string; error?: string } = {};
+    try {
+      submit = JSON.parse(submitText);
+    } catch {
+      /* keep raw */
+    }
+    if (!submitRes.ok) {
+      const reason = `submit-failed-${submitRes.status}: ${submit.error || submitText.slice(0, 200)}`;
+      console.warn('[ai-detect]', reason);
+      return { score: null, reason };
+    }
     const id = submit?.id;
-    if (!id) return null;
+    if (!id) {
+      const reason = `no-id-in-submit: ${submitText.slice(0, 200)}`;
+      console.warn('[ai-detect]', reason);
+      return { score: null, reason };
+    }
 
     // Poll. Average detection takes 2-4s; we cap at ~30s.
     const maxAttempts = 20;
@@ -849,17 +908,44 @@ async function detectAiScore(
         signal,
         body: JSON.stringify({ mode: 'query', id }),
       });
-      if (!queryRes.ok) continue;
-      const data = (await queryRes.json().catch(() => ({}))) as DetectQueryResult;
-      if (data?.status === 'done' && typeof data.result === 'number') {
-        return data.result;
+      const queryText = await queryRes.text();
+      let data: DetectQueryResult = {};
+      try {
+        data = JSON.parse(queryText) as DetectQueryResult;
+      } catch {
+        /* keep raw */
       }
-      if (data?.status === 'failed') return null;
+      if (!queryRes.ok) {
+        // 4xx is fatal — keep retrying makes no sense.
+        if (queryRes.status >= 400 && queryRes.status < 500) {
+          const reason = `query-failed-${queryRes.status}: ${queryText.slice(0, 200)}`;
+          console.warn('[ai-detect]', reason);
+          return { score: null, reason };
+        }
+        continue;
+      }
+      if (data?.status === 'done') {
+        const score = extractAiScore(data);
+        if (score === null) {
+          const reason = `no-score-in-result: ${queryText.slice(0, 300)}`;
+          console.warn('[ai-detect]', reason);
+          return { score: null, reason };
+        }
+        // Detector occasionally returns scores >100 / <0 — clamp.
+        return { score: Math.max(0, Math.min(100, score)) };
+      }
+      if (data?.status === 'failed') {
+        const reason = `detector-failed: ${data.error || queryText.slice(0, 200)}`;
+        console.warn('[ai-detect]', reason);
+        return { score: null, reason };
+      }
+      // status === 'pending' — keep polling
     }
-    return null;
+    return { score: null, reason: 'timed-out' };
   } catch (err) {
     if (err instanceof Error && err.message === 'Aborted') throw err;
-    return null;
+    const msg = err instanceof Error ? err.message : String(err);
+    return { score: null, reason: `exception: ${msg}` };
   }
 }
 
@@ -1652,6 +1738,13 @@ export interface SectionAiResult {
   aiScore: number | null;
   /** True when score < threshold → already human, no need to humanize. */
   alreadyHuman: boolean;
+  /**
+   * Diagnostic when aiScore is null. One of:
+   *   "too-short" (under 200 words, detector unreliable),
+   *   "submit-failed-…", "no-id-in-submit", "query-failed-…",
+   *   "no-score-in-result", "detector-failed", "timed-out", "exception: …"
+   */
+  detectionReason?: string;
 }
 
 /** Progress callback fired for each section as detection finishes. */
@@ -1713,14 +1806,20 @@ export async function detectAiOnPreview(
     // The detector needs ≥200 words to produce a reliable score. Skip
     // detection for tiny sections — they stay eligible.
     let aiScore: number | null = null;
-    if (s.wordCount >= 200) {
+    let detectionReason: string | undefined;
+    if (s.wordCount < 200) {
+      detectionReason = 'too-short';
+    } else {
       try {
         // Strip the paragraph sentinel before sending to the detector.
         const cleanText = s.text.replace(/¶¶¶/g, ' ');
-        aiScore = await detectAiScore(cleanText, signal);
+        const r = await detectAiScoreVerbose(cleanText, signal);
+        aiScore = r.score;
+        detectionReason = r.reason;
       } catch (err) {
         if (err instanceof Error && err.message === 'Aborted') throw err;
         aiScore = null;
+        detectionReason = err instanceof Error ? err.message : String(err);
       }
     }
     const alreadyHuman = aiScore !== null && aiScore < AI_DETECTION_THRESHOLD;
@@ -1730,6 +1829,7 @@ export async function detectAiOnPreview(
       wordCount: s.wordCount,
       aiScore,
       alreadyHuman,
+      detectionReason,
     };
     results.push(result);
     done += 1;

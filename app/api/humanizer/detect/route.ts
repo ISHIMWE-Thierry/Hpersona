@@ -59,6 +59,9 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({ id: body.id }),
       });
       const data = await r.json().catch(() => ({}));
+      // Diagnostic: surface raw UD response so we can see the actual shape
+      // when scores aren't being parsed client-side.
+      console.log('[detect:query]', r.status, JSON.stringify(data).slice(0, 500));
       return NextResponse.json(data, { status: r.status });
     }
 
@@ -89,6 +92,7 @@ export async function POST(req: NextRequest) {
       }),
     });
     const data = await r.json().catch(() => ({}));
+    console.log('[detect:submit]', r.status, JSON.stringify(data).slice(0, 500));
     return NextResponse.json(data, { status: r.status });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
